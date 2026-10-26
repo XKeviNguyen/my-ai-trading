@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Credentials, local state and provider secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.sqlite3
+*.db
+
+# IDE/user-specific
+.vscode/.ropeproject
+.idea/
+.DS_Store
+
+# Data, model checkpoints and screenshots: curate explicitly before tracking
+local-data/
+datasets/private/
+checkpoints/
+models/local/
+screenshots/private/
+logs/
+*.log
+
+# OS temp
+*~
+
+# Additional local secrets (defense in depth; tracked files still require scanning)
+.envrc
+.npmrc
+.pypirc
+.aws/
+credentials.json
+service-account*.json
+service_account*.json
+id_rsa
+id_ed25519
+*.keystore
+*.jks
+
+# Agent worktrees (local only)
+.claude/worktrees/

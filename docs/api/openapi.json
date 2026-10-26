@@ -1,0 +1,1944 @@
+{
+ "components": {
+  "schemas": {
+   "AllOf": {
+    "additionalProperties": false,
+    "properties": {
+     "items": {
+      "items": {
+       "discriminator": {
+        "mapping": {
+         "all": "#/components/schemas/AllOf",
+         "any": "#/components/schemas/AnyOf",
+         "compare": "#/components/schemas/Compare",
+         "not": "#/components/schemas/Not",
+         "trend": "#/components/schemas/Trend"
+        },
+        "propertyName": "kind"
+       },
+       "oneOf": [
+        {
+         "$ref": "#/components/schemas/Compare"
+        },
+        {
+         "$ref": "#/components/schemas/Trend"
+        },
+        {
+         "$ref": "#/components/schemas/AllOf"
+        },
+        {
+         "$ref": "#/components/schemas/AnyOf"
+        },
+        {
+         "$ref": "#/components/schemas/Not"
+        }
+       ]
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Items",
+      "type": "array"
+     },
+     "kind": {
+      "const": "all",
+      "default": "all",
+      "title": "Kind",
+      "type": "string"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "AllOf",
+    "type": "object"
+   },
+   "AnyOf": {
+    "additionalProperties": false,
+    "properties": {
+     "items": {
+      "items": {
+       "discriminator": {
+        "mapping": {
+         "all": "#/components/schemas/AllOf",
+         "any": "#/components/schemas/AnyOf",
+         "compare": "#/components/schemas/Compare",
+         "not": "#/components/schemas/Not",
+         "trend": "#/components/schemas/Trend"
+        },
+        "propertyName": "kind"
+       },
+       "oneOf": [
+        {
+         "$ref": "#/components/schemas/Compare"
+        },
+        {
+         "$ref": "#/components/schemas/Trend"
+        },
+        {
+         "$ref": "#/components/schemas/AllOf"
+        },
+        {
+         "$ref": "#/components/schemas/AnyOf"
+        },
+        {
+         "$ref": "#/components/schemas/Not"
+        }
+       ]
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Items",
+      "type": "array"
+     },
+     "kind": {
+      "const": "any",
+      "default": "any",
+      "title": "Kind",
+      "type": "string"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "AnyOf",
+    "type": "object"
+   },
+   "ApproveRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "rule_hash": {
+      "pattern": "^[0-9a-f]{16}$",
+      "title": "Rule Hash",
+      "type": "string"
+     }
+    },
+    "required": [
+     "rule_hash"
+    ],
+    "title": "ApproveRequest",
+    "type": "object"
+   },
+   "AskRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "deep": {
+      "default": false,
+      "title": "Deep",
+      "type": "boolean"
+     },
+     "market": {
+      "default": "usdm_perpetual",
+      "enum": [
+       "usdm_perpetual",
+       "spot"
+      ],
+      "title": "Market",
+      "type": "string"
+     },
+     "question": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+     },
+     "symbol": {
+      "pattern": "^[A-Z0-9]{3,20}$",
+      "title": "Symbol",
+      "type": "string"
+     }
+    },
+    "required": [
+     "symbol",
+     "question"
+    ],
+    "title": "AskRequest",
+    "type": "object"
+   },
+   "BacktestConfigBody": {
+    "additionalProperties": false,
+    "properties": {
+     "direction": {
+      "default": "long",
+      "enum": [
+       "long",
+       "short"
+      ],
+      "title": "Direction",
+      "type": "string"
+     },
+     "exit_on_rule_false": {
+      "default": false,
+      "title": "Exit On Rule False",
+      "type": "boolean"
+     },
+     "fee_bps": {
+      "default": 5.0,
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "title": "Fee Bps",
+      "type": "number"
+     },
+     "funding_rate_per_8h": {
+      "default": 0.0,
+      "maximum": 0.01,
+      "minimum": -0.01,
+      "title": "Funding Rate Per 8H",
+      "type": "number"
+     },
+     "hold_bars": {
+      "maximum": 500.0,
+      "minimum": 1.0,
+      "title": "Hold Bars",
+      "type": "integer"
+     },
+     "slippage_bps": {
+      "default": 2.0,
+      "maximum": 100.0,
+      "minimum": 0.0,
+      "title": "Slippage Bps",
+      "type": "number"
+     },
+     "stop_atr_mult": {
+      "anyOf": [
+       {
+        "exclusiveMinimum": 0.0,
+        "maximum": 20.0,
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Stop Atr Mult"
+     }
+    },
+    "required": [
+     "hold_bars"
+    ],
+    "title": "BacktestConfigBody",
+    "type": "object"
+   },
+   "BacktestRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "bars": {
+      "default": 1000,
+      "maximum": 1499.0,
+      "minimum": 100.0,
+      "title": "Bars",
+      "type": "integer"
+     },
+     "config": {
+      "$ref": "#/components/schemas/BacktestConfigBody"
+     },
+     "event_type": {
+      "anyOf": [
+       {
+        "maxLength": 40,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Event Type"
+     },
+     "market": {
+      "default": "usdm_perpetual",
+      "enum": [
+       "usdm_perpetual",
+       "spot"
+      ],
+      "title": "Market",
+      "type": "string"
+     },
+     "n_folds": {
+      "default": 4,
+      "maximum": 10.0,
+      "minimum": 1.0,
+      "title": "N Folds",
+      "type": "integer"
+     },
+     "rule": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/StrategyRule"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "symbol": {
+      "pattern": "^[A-Z0-9]{3,20}$",
+      "title": "Symbol",
+      "type": "string"
+     },
+     "timeframe": {
+      "default": "1d",
+      "maxLength": 4,
+      "title": "Timeframe",
+      "type": "string"
+     },
+     "walk_forward": {
+      "default": false,
+      "title": "Walk Forward",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "symbol",
+     "config"
+    ],
+    "title": "BacktestRequest",
+    "type": "object"
+   },
+   "Body_vision_api_v1_copilot_vision_post": {
+    "properties": {
+     "image": {
+      "contentMediaType": "application/octet-stream",
+      "title": "Image",
+      "type": "string"
+     },
+     "market": {
+      "default": "usdm_perpetual",
+      "enum": [
+       "usdm_perpetual",
+       "spot"
+      ],
+      "title": "Market",
+      "type": "string"
+     },
+     "question": {
+      "default": "",
+      "maxLength": 4000,
+      "title": "Question",
+      "type": "string"
+     },
+     "symbol": {
+      "anyOf": [
+       {
+        "pattern": "^[A-Z0-9]{3,20}$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Symbol"
+     }
+    },
+    "required": [
+     "image"
+    ],
+    "title": "Body_vision_api_v1_copilot_vision_post",
+    "type": "object"
+   },
+   "ChallengeRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "deep": {
+      "default": false,
+      "title": "Deep",
+      "type": "boolean"
+     },
+     "focus_timeframe": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Focus Timeframe"
+     },
+     "market": {
+      "default": "usdm_perpetual",
+      "enum": [
+       "usdm_perpetual",
+       "spot"
+      ],
+      "title": "Market",
+      "type": "string"
+     },
+     "symbol": {
+      "pattern": "^[A-Z0-9]{3,20}$",
+      "title": "Symbol",
+      "type": "string"
+     },
+     "thesis": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Thesis",
+      "type": "string"
+     }
+    },
+    "required": [
+     "symbol",
+     "thesis"
+    ],
+    "title": "ChallengeRequest",
+    "type": "object"
+   },
+   "Compare": {
+    "additionalProperties": false,
+    "properties": {
+     "kind": {
+      "const": "compare",
+      "default": "compare",
+      "title": "Kind",
+      "type": "string"
+     },
+     "left": {
+      "$ref": "#/components/schemas/MetricRef"
+     },
+     "op": {
+      "enum": [
+       ">",
+       ">=",
+       "<",
+       "<=",
+       "crosses_above",
+       "crosses_below"
+      ],
+      "title": "Op",
+      "type": "string"
+     },
+     "right": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/MetricRef"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "title": "Right"
+     }
+    },
+    "required": [
+     "left",
+     "op",
+     "right"
+    ],
+    "title": "Compare",
+    "type": "object"
+   },
+   "CompileRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "default_timeframe": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Default Timeframe"
+     },
+     "name": {
+      "default": "Custom strategy",
+      "maxLength": 80,
+      "title": "Name",
+      "type": "string"
+     },
+     "prompts": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 10,
+      "minItems": 1,
+      "title": "Prompts",
+      "type": "array"
+     },
+     "use_llm_fallback": {
+      "default": false,
+      "title": "Use Llm Fallback",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "prompts"
+    ],
+    "title": "CompileRequest",
+    "type": "object"
+   },
+   "DryRunRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "market": {
+      "default": "usdm_perpetual",
+      "enum": [
+       "usdm_perpetual",
+       "spot"
+      ],
+      "title": "Market",
+      "type": "string"
+     },
+     "replay_bars": {
+      "default": 200,
+      "maximum": 1000.0,
+      "minimum": 1.0,
+      "title": "Replay Bars",
+      "type": "integer"
+     },
+     "rule": {
+      "$ref": "#/components/schemas/StrategyRule"
+     },
+     "symbol": {
+      "pattern": "^[A-Z0-9]{3,20}$",
+      "title": "Symbol",
+      "type": "string"
+     }
+    },
+    "required": [
+     "rule",
+     "symbol"
+    ],
+    "title": "DryRunRequest",
+    "type": "object"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "MetricRef": {
+    "additionalProperties": false,
+    "properties": {
+     "bar": {
+      "default": "last_closed",
+      "enum": [
+       "last_closed",
+       "previous_closed"
+      ],
+      "title": "Bar",
+      "type": "string"
+     },
+     "name": {
+      "enum": [
+       "close",
+       "open",
+       "high",
+       "low",
+       "volume",
+       "sma",
+       "ema",
+       "volume_ratio",
+       "prior_high",
+       "prior_low",
+       "atr_wilder",
+       "rsi_wilder"
+      ],
+      "title": "Name",
+      "type": "string"
+     },
+     "period": {
+      "anyOf": [
+       {
+        "maximum": 500.0,
+        "minimum": 1.0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Period"
+     },
+     "timeframe": {
+      "enum": [
+       "1m",
+       "3m",
+       "5m",
+       "15m",
+       "30m",
+       "1h",
+       "2h",
+       "4h",
+       "6h",
+       "8h",
+       "12h",
+       "1d",
+       "3d",
+       "1w"
+      ],
+      "title": "Timeframe",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "timeframe"
+    ],
+    "title": "MetricRef",
+    "type": "object"
+   },
+   "Not": {
+    "additionalProperties": false,
+    "properties": {
+     "item": {
+      "discriminator": {
+       "mapping": {
+        "all": "#/components/schemas/AllOf",
+        "any": "#/components/schemas/AnyOf",
+        "compare": "#/components/schemas/Compare",
+        "not": "#/components/schemas/Not",
+        "trend": "#/components/schemas/Trend"
+       },
+       "propertyName": "kind"
+      },
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/Compare"
+       },
+       {
+        "$ref": "#/components/schemas/Trend"
+       },
+       {
+        "$ref": "#/components/schemas/AllOf"
+       },
+       {
+        "$ref": "#/components/schemas/AnyOf"
+       },
+       {
+        "$ref": "#/components/schemas/Not"
+       }
+      ],
+      "title": "Item"
+     },
+     "kind": {
+      "const": "not",
+      "default": "not",
+      "title": "Kind",
+      "type": "string"
+     }
+    },
+    "required": [
+     "item"
+    ],
+    "title": "Not",
+    "type": "object"
+   },
+   "RuleBody": {
+    "additionalProperties": false,
+    "properties": {
+     "kind": {
+      "default": "CUSTOM",
+      "enum": [
+       "CUSTOM",
+       "ADAPTED"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "parent_methodology": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parent Methodology"
+     },
+     "prompts": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 10,
+      "title": "Prompts",
+      "type": "array"
+     },
+     "rule": {
+      "$ref": "#/components/schemas/StrategyRule"
+     }
+    },
+    "required": [
+     "rule"
+    ],
+    "title": "RuleBody",
+    "type": "object"
+   },
+   "StrategyRule": {
+    "additionalProperties": false,
+    "properties": {
+     "condition": {
+      "discriminator": {
+       "mapping": {
+        "all": "#/components/schemas/AllOf",
+        "any": "#/components/schemas/AnyOf",
+        "compare": "#/components/schemas/Compare",
+        "not": "#/components/schemas/Not",
+        "trend": "#/components/schemas/Trend"
+       },
+       "propertyName": "kind"
+      },
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/Compare"
+       },
+       {
+        "$ref": "#/components/schemas/Trend"
+       },
+       {
+        "$ref": "#/components/schemas/AllOf"
+       },
+       {
+        "$ref": "#/components/schemas/AnyOf"
+       },
+       {
+        "$ref": "#/components/schemas/Not"
+       }
+      ],
+      "title": "Condition"
+     },
+     "cooldown_bars": {
+      "default": 1,
+      "description": "minimum bars between alerts; 0 or 1 = may alert on every bar",
+      "maximum": 1000.0,
+      "minimum": 0.0,
+      "title": "Cooldown Bars",
+      "type": "integer"
+     },
+     "description": {
+      "default": "",
+      "maxLength": 500,
+      "title": "Description",
+      "type": "string"
+     },
+     "name": {
+      "maxLength": 80,
+      "minLength": 1,
+      "pattern": "^[\\w .,:()+/\\-]+$",
+      "title": "Name",
+      "type": "string"
+     },
+     "on_match": {
+      "const": "ALERT",
+      "default": "ALERT",
+      "title": "On Match",
+      "type": "string"
+     },
+     "otherwise": {
+      "default": "WAIT",
+      "enum": [
+       "WAIT",
+       "NO_ALERT"
+      ],
+      "title": "Otherwise",
+      "type": "string"
+     },
+     "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+     },
+     "trigger_timeframe": {
+      "enum": [
+       "1m",
+       "3m",
+       "5m",
+       "15m",
+       "30m",
+       "1h",
+       "2h",
+       "4h",
+       "6h",
+       "8h",
+       "12h",
+       "1d",
+       "3d",
+       "1w"
+      ],
+      "title": "Trigger Timeframe",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "trigger_timeframe",
+     "condition"
+    ],
+    "title": "StrategyRule",
+    "type": "object"
+   },
+   "Trend": {
+    "additionalProperties": false,
+    "properties": {
+     "kind": {
+      "const": "trend",
+      "default": "trend",
+      "title": "Kind",
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "UP",
+       "DOWN",
+       "MIXED"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "timeframe": {
+      "enum": [
+       "1m",
+       "3m",
+       "5m",
+       "15m",
+       "30m",
+       "1h",
+       "2h",
+       "4h",
+       "6h",
+       "8h",
+       "12h",
+       "1d",
+       "3d",
+       "1w"
+      ],
+      "title": "Timeframe",
+      "type": "string"
+     }
+    },
+    "required": [
+     "timeframe",
+     "state"
+    ],
+    "title": "Trend",
+    "type": "object"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   }
+  }
+ },
+ "info": {
+  "title": "My AI Trading (local)",
+  "version": "0.2.0"
+ },
+ "openapi": "3.1.0",
+ "paths": {
+  "/api/v1/alerts": {
+   "get": {
+    "operationId": "alerts_api_v1_alerts_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "after_seq",
+      "required": false,
+      "schema": {
+       "default": 0,
+       "minimum": 0,
+       "title": "After Seq",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Alerts"
+   }
+  },
+  "/api/v1/analysis": {
+   "get": {
+    "operationId": "analysis_api_v1_analysis_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "symbol",
+      "required": true,
+      "schema": {
+       "pattern": "^[A-Z0-9]{3,20}$",
+       "title": "Symbol",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "market",
+      "required": false,
+      "schema": {
+       "default": "usdm_perpetual",
+       "enum": [
+        "usdm_perpetual",
+        "spot"
+       ],
+       "title": "Market",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "analysis_timeframe",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Analysis Timeframe"
+      }
+     },
+     {
+      "in": "query",
+      "name": "timeframes",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Timeframes"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Analysis Api V1 Analysis Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Analysis"
+   }
+  },
+  "/api/v1/backtest": {
+   "post": {
+    "operationId": "backtest_api_v1_backtest_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BacktestRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Backtest Api V1 Backtest Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Backtest"
+   }
+  },
+  "/api/v1/copilot/ask": {
+   "post": {
+    "operationId": "ask_api_v1_copilot_ask_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AskRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Ask Api V1 Copilot Ask Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Ask"
+   }
+  },
+  "/api/v1/copilot/challenge": {
+   "post": {
+    "operationId": "challenge_thesis_api_v1_copilot_challenge_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ChallengeRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Challenge Thesis Api V1 Copilot Challenge Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Challenge Thesis"
+   }
+  },
+  "/api/v1/copilot/vision": {
+   "post": {
+    "operationId": "vision_api_v1_copilot_vision_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "multipart/form-data": {
+       "schema": {
+        "$ref": "#/components/schemas/Body_vision_api_v1_copilot_vision_post"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Vision Api V1 Copilot Vision Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Vision"
+   }
+  },
+  "/api/v1/health": {
+   "get": {
+    "operationId": "health_api_v1_health_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Health Api V1 Health Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Health"
+   }
+  },
+  "/api/v1/methodologies": {
+   "get": {
+    "operationId": "methodologies_api_v1_methodologies_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Methodologies Api V1 Methodologies Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Methodologies"
+   }
+  },
+  "/api/v1/monitor/status": {
+   "get": {
+    "operationId": "monitor_status_api_v1_monitor_status_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Monitor Status Api V1 Monitor Status Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Monitor Status"
+   }
+  },
+  "/api/v1/settings": {
+   "get": {
+    "operationId": "get_settings_api_v1_settings_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Get Settings Api V1 Settings Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Settings"
+   },
+   "put": {
+    "operationId": "put_settings_api_v1_settings_put",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "additionalProperties": true,
+        "title": "Body",
+        "type": "object"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Put Settings Api V1 Settings Put",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Put Settings"
+   }
+  },
+  "/api/v1/snapshot": {
+   "get": {
+    "operationId": "snapshot_api_v1_snapshot_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "symbol",
+      "required": true,
+      "schema": {
+       "pattern": "^[A-Z0-9]{3,20}$",
+       "title": "Symbol",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "market",
+      "required": false,
+      "schema": {
+       "default": "usdm_perpetual",
+       "enum": [
+        "usdm_perpetual",
+        "spot"
+       ],
+       "title": "Market",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "timeframes",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 64,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Timeframes"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Snapshot Api V1 Snapshot Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Snapshot"
+   }
+  },
+  "/api/v1/strategies": {
+   "get": {
+    "operationId": "list_strategies_api_v1_strategies_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response List Strategies Api V1 Strategies Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Strategies"
+   },
+   "post": {
+    "operationId": "create_strategy_api_v1_strategies_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RuleBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Create Strategy Api V1 Strategies Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Create Strategy"
+   }
+  },
+  "/api/v1/strategies/compile": {
+   "post": {
+    "operationId": "compile_strategy_api_v1_strategies_compile_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CompileRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Compile Strategy Api V1 Strategies Compile Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Compile Strategy"
+   }
+  },
+  "/api/v1/strategies/dry-run": {
+   "post": {
+    "operationId": "dry_run_api_v1_strategies_dry_run_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DryRunRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Dry Run Api V1 Strategies Dry Run Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Dry Run"
+   }
+  },
+  "/api/v1/strategies/{sid}": {
+   "put": {
+    "operationId": "revise_strategy_api_v1_strategies__sid__put",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "sid",
+      "required": true,
+      "schema": {
+       "title": "Sid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RuleBody"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Revise Strategy Api V1 Strategies  Sid  Put",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Revise Strategy"
+   }
+  },
+  "/api/v1/strategies/{sid}/deactivate": {
+   "post": {
+    "operationId": "deactivate_api_v1_strategies__sid__deactivate_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "sid",
+      "required": true,
+      "schema": {
+       "title": "Sid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Deactivate Api V1 Strategies  Sid  Deactivate Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Deactivate"
+   }
+  },
+  "/api/v1/strategies/{sid}/versions/{version}/approve": {
+   "post": {
+    "operationId": "approve_api_v1_strategies__sid__versions__version__approve_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "sid",
+      "required": true,
+      "schema": {
+       "title": "Sid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "version",
+      "required": true,
+      "schema": {
+       "title": "Version",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ApproveRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Approve Api V1 Strategies  Sid  Versions  Version  Approve Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Approve"
+   }
+  },
+  "/api/v1/usage": {
+   "get": {
+    "operationId": "usage_api_v1_usage_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Usage Api V1 Usage Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Usage"
+   }
+  }
+ }
+}
