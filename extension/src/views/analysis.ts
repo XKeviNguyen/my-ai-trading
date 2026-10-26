@@ -187,14 +187,14 @@ export class AnalysisView implements View {
       snapshotHeader(snap, atf, now),
       h(
         "section",
-        { "aria-labelledby": "mtf-h" },
+        { "aria-labeledby": "mtf-h" },
         h("h3", { id: "mtf-h" }, "Multi-timeframe summary"),
         alignmentBlock(snap.alignment),
         h("div", { class: "cards" }, tfCards),
       ),
       h(
         "section",
-        { "aria-labelledby": "persp-h" },
+        { "aria-labeledby": "persp-h" },
         h("h3", { id: "persp-h" }, `Methodology perspectives (${persp.length})`),
         persp.length === 0
           ? h(

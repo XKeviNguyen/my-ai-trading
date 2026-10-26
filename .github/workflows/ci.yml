@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install (no AI extra; tests are offline)
-        run: python -m pip install -e '.[api,test]'
+        run: python -m pip install -e '.[api,test,vision]'
       - name: Tests
         run: python -m pytest
       # Secret scanning in CI needs a full-history scanner (e.g. Gitleaks) — owner decision, see docs/SECURITY.md.

@@ -48,7 +48,7 @@ def test_fixed_hosts_per_market_and_allowlisted_query():
         p.klines(PERP, Timeframe("1h"), limit=0)
 
 
-def test_rate_limit_honours_retry_after_and_blocks_further_calls():
+def test_rate_limit_honors_retry_after_and_blocks_further_calls():
     now = [1000.0]
     http = FakeHttp(lambda url: HttpResult(429, b"", {"retry-after": "30"}))
     p = BinancePublic(http, clock=lambda: now[0])

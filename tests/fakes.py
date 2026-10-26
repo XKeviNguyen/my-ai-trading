@@ -42,3 +42,15 @@ def make_exchange(days=420):
     ex = Exchange(hist, START + 400 * DAY_MS)
     svc = MarketDataService(ex, clock=ServerClock(ex, local=lambda: ex.now / 1000))
     return ex, svc
+
+
+def tiny_png(width=8, height=8):
+    """A real, valid gray PNG built with the standard library (no OpenCV needed)."""
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    raw = b"".join(b"\x00" + b"\x80" * width for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))

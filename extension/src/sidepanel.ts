@@ -3,7 +3,7 @@
 import { App, type TabId, type View } from "./app.js";
 import { h, setChildren } from "./dom.js";
 import { makeClient } from "./storage.js";
-import { isMarket, marketLabel, normaliseSymbol, parseBinanceUrl, type Instrument } from "./symbol.js";
+import { isMarket, marketLabel, normalizeSymbol, parseBinanceUrl, type Instrument } from "./symbol.js";
 import { AlertsView } from "./views/alerts.js";
 import { AnalysisView } from "./views/analysis.js";
 import { CopilotView } from "./views/copilot.js";
@@ -103,12 +103,12 @@ async function detectFromTab(): Promise<void> {
   }
   const inst = parseBinanceUrl(url);
   if (inst) useInstrument(inst, "tab");
-  else if (app.instrumentSource !== "manual") renderSummary(app.instrument ? "active tab is not a recognised Binance pair" : "Open a Binance futures/spot pair or type a symbol.");
+  else if (app.instrumentSource !== "manual") renderSummary(app.instrument ? "active tab is not a recognized Binance pair" : "Open a Binance futures/spot pair or type a symbol.");
 }
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();
-  const sym = normaliseSymbol(symInput.value);
+  const sym = normalizeSymbol(symInput.value);
   if (!sym) {
     formMsg.textContent = "Symbol must be 3–20 letters/digits, e.g. SANDUSDT.";
     symInput.setAttribute("aria-invalid", "true");
@@ -124,7 +124,7 @@ follow.addEventListener("change", () => void detectFromTab());
 tfSel.addEventListener("change", () => app.setAnalysisTf(tfSel.value));
 watchSel.addEventListener("change", () => {
   const [sym, market] = watchSel.value.split("|");
-  if (sym && isMarket(market) && normaliseSymbol(sym)) {
+  if (sym && isMarket(market) && normalizeSymbol(sym)) {
     follow.checked = false;
     useInstrument({ symbol: sym, market }, "manual");
   }
@@ -163,7 +163,7 @@ async function init(): Promise<void> {
   await detectFromTab();
   if (!app.instrument) {
     const last = (await chrome.storage.local.get("lastInstrument"))["lastInstrument"] as Partial<Instrument> | undefined;
-    if (last && typeof last.symbol === "string" && normaliseSymbol(last.symbol) === last.symbol && isMarket(last.market)) {
+    if (last && typeof last.symbol === "string" && normalizeSymbol(last.symbol) === last.symbol && isMarket(last.market)) {
       useInstrument({ symbol: last.symbol, market: last.market }, "manual", "last used");
     }
   }

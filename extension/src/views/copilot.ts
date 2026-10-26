@@ -4,7 +4,7 @@
 import type { App, View } from "../app.js";
 import { badge, field, h, list, setChildren, status } from "../dom.js";
 import { fmtInt, fmtNum, fmtUsd } from "../format.js";
-import type { AskResponse, ChallengeResponse, Interpretation, VisionResponse } from "../types.js";
+import type { AskResponse, ChallengeResponse, Interpretation, LocalVisionAnalysis, VisionResponse } from "../types.js";
 import { alignmentBlock } from "./analysis.js";
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -117,8 +117,50 @@ function renderChallenge(r: ChallengeResponse): HTMLElement[] {
   ].filter(Boolean) as HTMLElement[];
 }
 
+function checkTone(result: string | undefined): "ok" | "warn" | "err" | "muted" {
+  if (result === "MATCH" || result === "AGREES") return "ok";
+  if (result === "MISMATCH" || result === "DISAGREES") return "err";
+  return "muted";
+}
+
+/** Local OpenCV/OCR result: zero-token visual hypotheses, cross-checked against exchange data. */
+export function renderLocalVision(l: LocalVisionAnalysis | undefined): HTMLElement | null {
+  if (!l) return null;
+  if (l.status !== "OK") {
+    return h("section", { class: "card" }, h("h3", null, "Local image analysis"),
+      h("p", { class: "muted" }, `${l.status ?? "UNAVAILABLE"}: ${l.reason ?? ""}`));
+  }
+  const g = l.geometry ?? {};
+  const o = l.ocr ?? {};
+  const p = o.parsed ?? {};
+  const geometry = g.state === "DETECTED"
+    ? `${fmtInt(g.candles_detected)} candle shapes (${fmtInt(g.green)} green / ${fmtInt(g.red)} red), visual drift ${g.visual_drift}, last visible candle ${g.last_visible_candle_color}`
+    : (g.note ?? g.state ?? "not detected");
+  const ocrLines = o.status === "OK"
+    ? [
+        `Symbols read: ${(p.symbols ?? []).join(", ") || "none"}`,
+        `Timeframes read: ${(p.timeframes ?? []).join(", ") || "none"}`,
+        `Indicator labels: ${(p.indicator_labels ?? []).join(", ") || "none"}`,
+        `Price-axis labels: ${(p.price_axis_labels ?? []).map((x) => fmtNum(x)).join(", ") || "none"}`,
+        `Mean OCR confidence: ${fmtNum(o.mean_confidence ?? null)} (${o.confidence_note ?? "uncalibrated"})`,
+      ]
+    : [`OCR ${o.status ?? "unavailable"}: ${o.reason ?? ""}`];
+  return h("section", { class: "card" },
+    h("h3", null, "Local image analysis ", badge("0 tokens", "info")),
+    h("p", { class: "small muted" }, l.label ?? ""),
+    h("p", null, h("strong", null, "Shapes: "), geometry),
+    list(ocrLines),
+    h("h4", null, "Checks against exchange data"),
+    h("ul", { class: "plain" }, (l.cross_checks ?? []).map((c) =>
+      h("li", null, badge(c.result ?? "?", checkTone(c.result)), " ", c.check ?? "",
+        c.reason ? ` — ${c.reason}` : "", c.note ? ` — ${c.note}` : ""))),
+    (l.ambiguities ?? []).length ? list(l.ambiguities) : null,
+    h("p", { class: "small muted" }, l.privacy ?? ""));
+}
+
 function renderVision(r: VisionResponse): HTMLElement[] {
   return [
+    renderLocalVision(r.local_analysis),
     r.visual_hypotheses ? modelText("Visual hypotheses", r.visual_hypotheses) : null,
     fallback(r.route, r.fallback_reason),
   ].filter(Boolean) as HTMLElement[];
@@ -179,7 +221,7 @@ export class CopilotView implements View {
         .catch((err) => setChildren(out, this.app.errorView(err)))
         .finally(() => (btn.disabled = false));
     });
-    return h("section", { "aria-labelledby": "ask-h" }, h("h3", { id: "ask-h" }, "Copilot"), form);
+    return h("section", { "aria-labeledby": "ask-h" }, h("h3", { id: "ask-h" }, "Copilot"), form);
   }
 
   private challengeSection(): HTMLElement {
@@ -216,7 +258,7 @@ export class CopilotView implements View {
         .catch((err) => setChildren(out, this.app.errorView(err)))
         .finally(() => (btn.disabled = false));
     });
-    return h("section", { "aria-labelledby": "ch-h" }, h("h3", { id: "ch-h" }, "Challenge My Thesis"), form);
+    return h("section", { "aria-labeledby": "ch-h" }, h("h3", { id: "ch-h" }, "Challenge My Thesis"), form);
   }
 
   private visionSection(): HTMLElement {

@@ -93,7 +93,7 @@ export class StudioView implements View {
       this.composer(),
       h(
         "section",
-        { "aria-labelledby": "strat-h" },
+        { "aria-labeledby": "strat-h" },
         h("div", { class: "row-between" }, h("h3", { id: "strat-h" }, "My strategies"), h("button", { type: "button", onclick: () => void this.loadList() }, "Reload")),
         this.listBox,
       ),
@@ -143,7 +143,7 @@ export class StudioView implements View {
         .catch((err) => setChildren(out, this.app.errorView(err)))
         .finally(() => (btn.disabled = false));
     });
-    return h("section", { "aria-labelledby": "studio-h" }, h("h3", { id: "studio-h" }, "Strategy Studio"), form);
+    return h("section", { "aria-labeledby": "studio-h" }, h("h3", { id: "studio-h" }, "Strategy Studio"), form);
   }
 
   private proposal(r: CompileResponse | (Partial<CompileResponse> & { reason?: string; model?: string }), prompts: string[], title: string): HTMLElement {
@@ -164,7 +164,7 @@ export class StudioView implements View {
       extra.model ? h("p", { class: "mode-label" }, `Proposed by model ${extra.model} — review every condition`) : null,
       extra.reason ? h("p", { class: "small" }, extra.reason) : null,
       r.preview ? previewBlock(r.preview) : null,
-      r.clauses && r.clauses.length ? h("details", null, h("summary", null, "Recognised clauses"), list(r.clauses.map((c) => `${c.kind}: ${c.text}`))) : null,
+      r.clauses && r.clauses.length ? h("details", null, h("summary", null, "Recognized clauses"), list(r.clauses.map((c) => `${c.kind}: ${c.text}`))) : null,
       h("h5", null, "Assumptions"),
       list(r.assumptions),
       r.unresolved && r.unresolved.length ? [h("h5", null, "Unresolved"), list(r.unresolved)] : null,

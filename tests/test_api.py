@@ -2,7 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import make_exchange
+from fakes import make_exchange, tiny_png
 from my_ai_trading.api import create_app, load_or_create_token
 from my_ai_trading.compiler import compile_prompts
 from my_ai_trading.copilot import Copilot
@@ -141,8 +141,11 @@ def test_vision_rejects_non_images_and_oversize(env):
     assert r.status_code == 422
     big = b"\x89PNG\r\n\x1a\n" + b"0" * (5 * 1024 * 1024 + 10)
     assert c.post("/api/v1/copilot/vision", files={"image": ("x.png", big, "image/png")}, headers=H).status_code == 422
-    ok = c.post("/api/v1/copilot/vision", files={"image": ("x.png", b"\x89PNG\r\n\x1a\n000", "image/png")}, headers=H)
-    assert ok.status_code == 200 and ok.json()["route"] == "none"
+    fake = c.post("/api/v1/copilot/vision", files={"image": ("x.png", b"\x89PNG\r\n\x1a\n000", "image/png")},
+                  headers=H)
+    assert fake.status_code == 422  # PNG signature but not a decodable image
+    ok = c.post("/api/v1/copilot/vision", files={"image": ("x.png", tiny_png(), "image/png")}, headers=H)
+    assert ok.status_code == 200 and ok.json()["route"] == "local" and ok.json()["visual_hypotheses"] is None
 
 
 def test_token_file_created_with_owner_only_permissions(tmp_path):

@@ -58,7 +58,7 @@ def test_series_rejects_duplicates_disorder_and_wrong_interval_label():
         CandleSeries(DEMO_INSTRUMENT, Timeframe("1d"), (cs[0], cs[0]))
     with pytest.raises(ValueError, match="strictly ordered"):
         CandleSeries(DEMO_INSTRUMENT, Timeframe("1d"), (cs[1], cs[0]))
-    # Daily bars labelled weekly or hourly must fail (audit H3).
+    # Daily bars labeled weekly or hourly must fail (audit H3).
     for label in ("1w", "1h"):
         with pytest.raises(ValueError, match="duration"):
             CandleSeries(DEMO_INSTRUMENT, Timeframe(label), tuple(cs))

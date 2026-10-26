@@ -51,7 +51,7 @@ export function nextId(prefix: string): string {
   return `${prefix}-${uid}`;
 }
 
-/** A labelled form control wrapper. */
+/** A labeled form control wrapper. */
 export function field(label: string, control: HTMLElement, hint?: string): HTMLElement {
   const id = control.id || nextId("f");
   control.id = id;

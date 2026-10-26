@@ -22,6 +22,7 @@ States are *implemented + offline-tested* unless marked otherwise. Nothing has b
 | Copilot router, consent/budget gates, vision input checks | `copilot.py` | F07–F09 | `tests/test_thesis_copilot.py` (Scenario E) |
 | Backtester (next-open fills, costs, funding, stops, gaps, walk-forward) | `backtest.py` | F10 | `tests/test_backtest.py` |
 | ML baseline (leak-free dataset, purged split, baselines) | `ml.py` | §5, R6 | `tests/test_ml.py` (sklearn test skipped: not installed) |
+| Screenshot analysis: OpenCV candle geometry, Tesseract OCR (symbol, timeframe, MA labels, price axis), cross-checks against exchange data, decompression-bomb guard | `chartvision.py` | F08 | `tests/test_chartvision.py` (real-Tesseract test skipped: not installed) |
 | Local API (Host allowlist, token, CORS, rate limit) + CLI | `api.py`, `cli.py` | F11 | `tests/test_api.py` |
 
 Test command: `.venv/bin/python -m pytest` — see the latest result in the session report.
@@ -50,7 +51,7 @@ Test command: `.venv/bin/python -m pytest` — see the latest result in the sess
 | 8 | Low-Med | A long-idle cache reported a fake gap | Refetch when the hole exceeds one fetch window |
 | 9 | Low | Snapshot `as_of` could predate its data | `series(now_ms=...)` pinned to the snapshot instant |
 | 10 | Low | Docs/CDN scripts on the local origin, `testserver` host, redirects followed, clock re-sync hammering, budget race, status iteration race | `/docs` is opt-in (`serve --docs`); `testserver` removed; no-redirect opener; 60 s re-sync retry; budget lock; status uses a snapshot copy |
-| 11 | Low | Turtle "stop distance" read as trade guidance | Relabelled as a volatility reference, for study only |
+| 11 | Low | Turtle "stop distance" read as trade guidance | Relabeled as a volatility reference, for study only |
 
 Known and documented, not changed: after an outage the monitor evaluates only the latest closed bar; bars missed during the outage are not replayed. A rule's `cooldown_bars` means "minimum bars between alerts" (1 = every bar).
 
@@ -61,7 +62,8 @@ Known and documented, not changed: after an outage the monitor evaluates only th
 - **Chrome extension:** integrated (`extension/`, guide in `docs/EXTENSION.md`). 33/33 unit tests pass, and it was exercised end to end in headless Chrome against the real API code with synthetic data. Not yet tried: opening the side panel from the toolbar, real desktop notifications, symbol detection from a real Binance tab, live data, screen readers, and real 200% browser zoom.
 - WebSocket streaming. The monitor polls REST once per bar close, which is enough for ≥1m bars and needs no extra dependency.
 - Equity session calendars, licensed fundamentals/macro data, RS universe ranking, VCP detection, Brandt pattern recognition, and the other 16 profiles (catalog-only).
-- OpenCV/OCR preprocessing, LightGBM, PyTorch/PEFT (none installed; not needed by current features).
+- OCR has not run against the real Tesseract program (not installed here: `sudo apt install tesseract-ocr`). Geometry and text parsing are tested with synthetic charts and an injected OCR engine.
+- LightGBM, PyTorch/PEFT (not installed; not needed by current features).
 - Python 3.11 compatibility is targeted (`requires-python >= 3.11`, CI matrix) but only 3.14.4 has been run locally.
 - Full-history secret scanning (Gitleaks), remote branch protection on `main` (currently **unprotected**; repo is **public**).
 

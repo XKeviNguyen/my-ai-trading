@@ -2,7 +2,7 @@
 
 Routing order of least justified cost: deterministic answer → (consent + budget gates) → LLM at
 low effort → LLM at high effort / vision only on explicit request. Facts always come from the
-deterministic snapshot; model output is returned separately and labelled as interpretation.
+deterministic snapshot; model output is returned separately and labeled as interpretation.
 Prompts, market data, screenshots and model output are untrusted data, never instructions to act.
 """
 from __future__ import annotations
@@ -162,7 +162,7 @@ class Copilot:
     def _call(self, feature: str, content: list[dict[str, Any]], *, deep: bool) -> tuple[LLMResult | None, str | None]:
         max_tokens = 16_000 if deep else 4_000
         est_in = sum(len(c.get("text", "")) for c in content) // 3 + (1_600 if any(c["type"] == "image" for c in content) else 0)
-        with self._budget_lock:  # serialise so concurrent requests cannot jointly overspend
+        with self._budget_lock:  # serialize so concurrent requests cannot jointly overspend
             return self._call_locked(feature, content, deep=deep, est_in=est_in, max_tokens=max_tokens)
 
     def _call_locked(self, feature: str, content: list[dict[str, Any]], *, deep: bool, est_in: int,
@@ -229,21 +229,29 @@ class Copilot:
                                                                                  res.output_tokens)})
         return out
 
-    def analyze_chart_image(self, image: bytes, question: str, snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    def analyze_chart_image(self, image: bytes, question: str, snapshot: dict[str, Any] | None, *,
+                            expected_symbol: str | None = None) -> dict[str, Any]:
+        """Local OpenCV/OCR analysis first (free); model vision only behind the consent/opt-in/budget gates."""
+        from .chartvision import analyze_screenshot  # local import: chartvision imports this module
         media_type = validate_image(image)
+        local = analyze_screenshot(image, expected_symbol=expected_symbol, snapshot=snapshot)
+        out: dict[str, Any] = {"route": "local", "local_analysis": local, "visual_hypotheses": None}
         content = [{"type": "image", "source": {"type": "base64", "media_type": media_type,
                                                 "data": base64.standard_b64encode(image).decode()}},
                    {"type": "text", "text": "Describe visible chart structure, annotations and patterns as hypotheses. "
-                    "Exchange data below is authoritative for any number; flag disagreements.\n<snapshot>\n"
-                    + json.dumps(_public(snapshot or {}), default=str) + "\n</snapshot>\n<question>\n"
-                    + (question or "")[:MAX_QUESTION_CHARS] + "\n</question>"}]
+                    "Exchange data below is authoritative for any number; flag disagreements.\n<local_analysis>\n"
+                    + json.dumps({k: local.get(k) for k in ("geometry", "ocr", "cross_checks")}, default=str)
+                    + "\n</local_analysis>\n<snapshot>\n" + json.dumps(_public(snapshot or {}), default=str)
+                    + "\n</snapshot>\n<question>\n" + (question or "")[:MAX_QUESTION_CHARS] + "\n</question>"}]
         res, reason = self._call("vision", content, deep=True)
         if res is None:
-            return {"route": "none", "fallback_reason": reason, "visual_hypotheses": None}
-        return {"route": "vision", "visual_hypotheses": {
+            out["fallback_reason"] = reason
+            return out
+        out.update(route="local+vision", visual_hypotheses={
             "label": "Visual hypotheses from a screenshot — not exact OHLCV; verified only where exchange data agrees",
             "text": res.text, "model": res.model,
-            "estimated_cost_usd": estimate_cost(res.model, res.input_tokens, res.output_tokens)}}
+            "estimated_cost_usd": estimate_cost(res.model, res.input_tokens, res.output_tokens)})
+        return out
 
     def propose_rule(self, prompts: list[str]) -> dict[str, Any]:
         """LLM fallback for prompts the deterministic compiler could not resolve; output is validated data."""

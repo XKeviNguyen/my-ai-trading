@@ -444,7 +444,7 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
         if symbol:
             _, snap = await asyncio.to_thread(snapshot_for, symbol, market, ("1h", "1d"))
         try:
-            return await asyncio.to_thread(copilot.analyze_chart_image, data, question, snap)
+            return await asyncio.to_thread(copilot.analyze_chart_image, data, question, snap, expected_symbol=symbol)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

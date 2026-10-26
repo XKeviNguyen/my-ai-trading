@@ -213,9 +213,55 @@ export interface ChallengeResponse {
   fallback_reason?: string;
 }
 
+export interface VisionCheck {
+  check?: string;
+  result?: string;
+  expected?: string;
+  read?: string[];
+  timeframe?: string;
+  read_median?: number;
+  exchange_range_last_300_bars?: number[];
+  reason?: string;
+  note?: string;
+}
+
+export interface LocalVisionAnalysis {
+  method?: string;
+  label?: string;
+  status?: string;
+  reason?: string;
+  privacy?: string;
+  image?: { width?: number; height?: number };
+  geometry?: {
+    state?: string;
+    candles_detected?: number;
+    green?: number;
+    red?: number;
+    visual_drift?: string;
+    last_visible_candle_color?: string;
+    note?: string;
+  };
+  ocr?: {
+    status?: string;
+    reason?: string;
+    mean_confidence?: number | null;
+    confidence_note?: string;
+    parsed?: {
+      symbols?: string[];
+      timeframes?: string[];
+      indicator_labels?: string[];
+      price_axis_labels?: number[];
+      market_hint?: string | null;
+    };
+  };
+  cross_checks?: VisionCheck[];
+  ambiguities?: string[];
+}
+
 export interface VisionResponse {
   route?: string;
   fallback_reason?: string;
+  local_analysis?: LocalVisionAnalysis;
   visual_hypotheses?: { label?: string; text?: string; model?: string; estimated_cost_usd?: number | null } | null;
 }
 

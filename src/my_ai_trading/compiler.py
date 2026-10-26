@@ -214,7 +214,7 @@ def compile_prompts(prompts: list[str], *, name: str = "Custom strategy",
                          parsed[0] if len(parsed) == 1 else AllOf(items=parsed))
 
     if not nodes:
-        return Proposal("UNRESOLVED", assumptions=assumptions, unresolved=unresolved or ["nothing recognised"])
+        return Proposal("UNRESOLVED", assumptions=assumptions, unresolved=unresolved or ["nothing recognized"])
     condition = nodes[0] if len(nodes) == 1 else AllOf(items=nodes)
     trigger = _trigger_timeframe(condition)
     try:

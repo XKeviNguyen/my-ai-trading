@@ -80,7 +80,7 @@ scripts, CDNs or fonts).
 
 ## Known limitations
 
-- Only USD-M perpetual and spot URLs are recognised; coin-margined, margin and other pages fall
+- Only USD-M perpetual and spot URLs are recognized; coin-margined, margin and other pages fall
   back to manual entry.
 - The API returns the newest ≤ 100 alerts after `after_seq`, newest first. If more than 100 alerts
   arrive between two polls, the older ones in that gap are skipped by the client.
