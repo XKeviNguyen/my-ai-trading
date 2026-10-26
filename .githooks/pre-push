@@ -1,0 +1,4 @@
+#!/bin/sh
+# Does not grant agents permission to push; human approval remains mandatory.
+set -eu
+exec python3 tools/secret_guard.py --pre-push

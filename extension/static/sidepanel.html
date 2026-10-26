@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>My AI Trading</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+    <script type="module" src="sidepanel.js"></script>
+  </head>
+  <body>
+    <header class="inst" aria-label="Instrument">
+      <p class="readonly-note">Read-only research · no orders · closed bars only</p>
+      <p id="inst-summary" aria-live="polite"></p>
+      <form id="inst-form" class="inst-form" novalidate>
+        <label for="inst-symbol" class="sr-only">Symbol</label>
+        <input id="inst-symbol" type="text" inputmode="text" autocomplete="off" spellcheck="false"
+               maxlength="24" placeholder="Symbol, e.g. SANDUSDT" aria-describedby="inst-msg" />
+        <label for="inst-market" class="sr-only">Market</label>
+        <select id="inst-market">
+          <option value="usdm_perpetual">USD-M perp</option>
+          <option value="spot">Spot</option>
+        </select>
+        <button type="submit">Use</button>
+      </form>
+      <p id="inst-msg" class="small warn-text" role="status"></p>
+      <div class="inst-row">
+        <label class="check"><input id="inst-follow" type="checkbox" checked /> Follow active Binance tab</label>
+        <label for="inst-watch" class="sr-only">Pick from watchlist</label>
+        <select id="inst-watch"></select>
+        <label for="inst-tf" class="tf-label">TF</label>
+        <select id="inst-tf">
+          <option value="1h">1h</option>
+          <option value="4h">4h</option>
+          <option value="1d">1d</option>
+          <option value="1w">1w</option>
+        </select>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Sections">
+      <div role="tablist" aria-label="Sections">
+        <button type="button" role="tab" id="tab-analysis" data-tab="analysis" aria-controls="panel-analysis" aria-selected="true">Analysis</button>
+        <button type="button" role="tab" id="tab-copilot" data-tab="copilot" aria-controls="panel-copilot" aria-selected="false" tabindex="-1">Copilot</button>
+        <button type="button" role="tab" id="tab-studio" data-tab="studio" aria-controls="panel-studio" aria-selected="false" tabindex="-1">Studio</button>
+        <button type="button" role="tab" id="tab-alerts" data-tab="alerts" aria-controls="panel-alerts" aria-selected="false" tabindex="-1">Alerts</button>
+        <button type="button" role="tab" id="tab-usage" data-tab="usage" aria-controls="panel-usage" aria-selected="false" tabindex="-1">Usage</button>
+        <button type="button" role="tab" id="tab-methods" data-tab="methods" aria-controls="panel-methods" aria-selected="false" tabindex="-1">Methods</button>
+        <button type="button" role="tab" id="tab-settings" data-tab="settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">Settings</button>
+      </div>
+    </nav>
+
+    <main>
+      <section id="panel-analysis" role="tabpanel" aria-labelledby="tab-analysis" tabindex="0"></section>
+      <section id="panel-copilot" role="tabpanel" aria-labelledby="tab-copilot" tabindex="0" hidden></section>
+      <section id="panel-studio" role="tabpanel" aria-labelledby="tab-studio" tabindex="0" hidden></section>
+      <section id="panel-alerts" role="tabpanel" aria-labelledby="tab-alerts" tabindex="0" hidden></section>
+      <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage" tabindex="0" hidden></section>
+      <section id="panel-methods" role="tabpanel" aria-labelledby="tab-methods" tabindex="0" hidden></section>
+      <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden></section>
+    </main>
+  </body>
+</html>

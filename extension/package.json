@@ -1,0 +1,15 @@
+{
+  "name": "my-ai-trading-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only Chrome Side Panel client for the local My AI Trading API",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build.mjs",
+    "test": "npm run build && node --test \"test/*.test.mjs\""
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
