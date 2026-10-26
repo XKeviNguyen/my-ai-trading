@@ -14,7 +14,7 @@ dependencies = ["pydantic>=2.12,<3"]
 [project.optional-dependencies]
 api = ["fastapi>=0.120,<1", "uvicorn>=0.38,<1", "python-multipart>=0.0.20,<1"]
 ai = ["anthropic>=1.0,<2"]
-test = ["pytest>=9,<10", "hypothesis>=6.140,<7", "httpx>=0.28,<1"]
+test = ["pytest>=9,<10", "hypothesis>=6.140,<7", "httpx2>=2.16,<3"]  # Starlette TestClient transport
 
 [project.scripts]
 my-ai-trading = "my_ai_trading.cli:main"
@@ -25,8 +25,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -p no:cacheprovider"
-filterwarnings = [
-    "error",
-    # Third-party: Starlette's TestClient warns about httpx; not our code.
-    "ignore:Using `httpx` with `starlette.testclient`:DeprecationWarning",
-]
+filterwarnings = ["error"]
