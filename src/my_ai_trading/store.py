@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .accounts.analytics import RiskLimits
 from .methodology import BY_ID
 from .rules import StrategyRule
 
@@ -49,6 +50,16 @@ CREATE TABLE IF NOT EXISTS reports (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, instrument_key TEXT NOT NULL,
   title TEXT NOT NULL, json TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS reports_user_time ON reports(user_id, created_at DESC);
+-- Exchange connections: metadata ONLY. Secrets live in process memory or the OS vault (accounts/credentials.py).
+CREATE TABLE IF NOT EXISTS exchange_connections (
+  connection_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, meta_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS exchange_connections_user ON exchange_connections(user_id);
+-- Testnet order journal. Written BEFORE an order is sent, so a crash mid-send leaves a row to reconcile.
+CREATE TABLE IF NOT EXISTS trading_orders (
+  client_order_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, connection_id TEXT NOT NULL, exchange TEXT NOT NULL,
+  environment TEXT NOT NULL, request_json TEXT NOT NULL, state TEXT NOT NULL, order_json TEXT, message TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, lookups INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS trading_orders_user ON trading_orders(user_id, created_at DESC);
 """
 
 
@@ -76,6 +87,7 @@ class UserSettings(BaseModel):
     monthly_ai_token_budget: int = Field(default=200_000, ge=0, le=100_000_000)
     deep_analysis_opt_in: bool = False
     llm_data_consent: bool = False
+    risk_limits: RiskLimits = Field(default_factory=RiskLimits)
 
     def model_post_init(self, _: Any) -> None:
         from .domain import Timeframe
@@ -301,6 +313,78 @@ class Store:
                 "total_tokens": sum((r["i"] or 0) + (r["o"] or 0) for r in items),
                 "total_cost_usd": round(sum(r["c"] or 0 for r in items), 6),
                 "calls_with_unknown_cost": sum(r["unknown_cost"] or 0 for r in items)}
+
+    # ---- exchange connections (metadata only; see accounts/credentials.py) ----
+    def save_connection(self, meta: Any) -> None:
+        self._x("INSERT INTO exchange_connections VALUES(?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET "
+                "meta_json=excluded.meta_json, updated_at=excluded.updated_at",
+                (meta.connection_id, meta.user_id, meta.model_dump_json(), _now()))
+
+    def connection(self, connection_id: str, user: str) -> Any:
+        from .accounts.credentials import ConnectionMeta
+        rows = self._q("SELECT meta_json FROM exchange_connections WHERE connection_id=? AND user_id=?",
+                       (connection_id, user))
+        return ConnectionMeta.model_validate_json(rows[0]["meta_json"]) if rows else None
+
+    def connections(self, user: str) -> list[Any]:
+        from .accounts.credentials import ConnectionMeta
+        return [ConnectionMeta.model_validate_json(r["meta_json"]) for r in
+                self._q("SELECT meta_json FROM exchange_connections WHERE user_id=? ORDER BY updated_at", (user,))]
+
+    def all_connections(self) -> list[Any]:
+        from .accounts.credentials import ConnectionMeta
+        return [ConnectionMeta.model_validate_json(r["meta_json"])
+                for r in self._q("SELECT meta_json FROM exchange_connections")]
+
+    def delete_connection(self, connection_id: str) -> None:
+        self._x("DELETE FROM exchange_connections WHERE connection_id=?", (connection_id,))
+
+    # ---- testnet order journal (accounts/trading.py) ----
+    def journal_insert(self, row: dict[str, Any]) -> None:
+        """Fails (IntegrityError) if the client order ID already exists: one preview, at most one order."""
+        now = _now()
+        self._x("INSERT INTO trading_orders VALUES(?,?,?,?,?,?,?,?,?,?,?,0)",
+                (row["client_order_id"], row["user_id"], row["connection_id"], row["exchange"], row["environment"],
+                 row["request_json"], row["state"], None, None, row.get("created_at", now), now))
+
+    _TERMINAL = ("FILLED", "CANCELED", "REJECTED", "EXPIRED")
+
+    def journal_update(self, client_order_id: str, *, state: str, order_json: str | None = None,
+                       message: str | None = None) -> str | None:
+        """Set the state, except that a final state is never replaced by a non-final one. The check and the write
+        are one statement, so a concurrent cancel and status check cannot reorder them. Returns the stored state."""
+        terminal = ",".join("?" * len(self._TERMINAL))
+        with self._lock:
+            self._db.execute(
+                f"UPDATE trading_orders SET state=?, order_json=COALESCE(?, order_json), message=?, updated_at=? "
+                f"WHERE client_order_id=? AND (state NOT IN ({terminal}) OR ? IN ({terminal}))",
+                (state, order_json, message, _now(), client_order_id, *self._TERMINAL, state, *self._TERMINAL))
+            row = self._db.execute("SELECT state FROM trading_orders WHERE client_order_id=?",
+                                   (client_order_id,)).fetchone()
+        return row[0] if row else None
+
+    def journal_row(self, client_order_id: str) -> dict[str, Any] | None:
+        rows = self._q("SELECT * FROM trading_orders WHERE client_order_id=?", (client_order_id,))
+        return dict(rows[0]) if rows else None
+
+    def journal_lookup(self, client_order_id: str) -> int:
+        """Count one more 'not found' lookup; returns the new total (atomic)."""
+        with self._lock:
+            self._db.execute("UPDATE trading_orders SET lookups=lookups+1 WHERE client_order_id=?", (client_order_id,))
+            return self._db.execute("SELECT lookups FROM trading_orders WHERE client_order_id=?",
+                                    (client_order_id,)).fetchone()[0]
+
+    def journal_open(self, user: str) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._q("SELECT * FROM trading_orders WHERE user_id=? AND state IN ('SENDING','UNKNOWN') "
+                                         "ORDER BY created_at", (user,))]
+
+    def journal(self, user: str, *, limit: int = 100, client_order_id: str | None = None) -> list[dict[str, Any]]:
+        if client_order_id is not None:
+            rows = self._q("SELECT * FROM trading_orders WHERE user_id=? AND client_order_id=?", (user, client_order_id))
+        else:
+            rows = self._q("SELECT * FROM trading_orders WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+                           (user, min(max(limit, 1), 500)))
+        return [dict(r) for r in rows]
 
 
 def _now() -> int:

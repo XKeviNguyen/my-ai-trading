@@ -17,6 +17,9 @@ ai = ["anthropic>=1.0,<2"]
 vision = ["opencv-python-headless>=4.10,<6"]
 ml = ["scikit-learn>=1.6,<2", "lightgbm>=4.5,<5"]  # OCR also needs the system tesseract program
 test = ["pytest>=9,<10", "hypothesis>=6.140,<7", "httpx2>=2.16,<3"]  # Starlette TestClient transport
+# R8 exchange accounts: OS credential vault + exchange WebSocket streams (see docs/ACCOUNTS_TRADING.md)
+accounts = ["keyring>=25.7,<26", "websockets>=17,<18"]
+analytics = ["numpy>=2.2,<3", "pandas>=3,<4"]  # portfolio and performance analytics
 
 [project.scripts]
 my-ai-trading = "my_ai_trading.cli:main"

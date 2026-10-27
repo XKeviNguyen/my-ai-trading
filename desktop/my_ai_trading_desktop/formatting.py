@@ -411,3 +411,111 @@ def usage_table_row(r: dict[str, Any]) -> list[str]:
 def report_filename(report_id: str) -> str:
     safe = re.sub(r"[^0-9a-f]", "", report_id or "")[:12] or "report"
     return f"report-{safe}.md"
+
+
+# ---------------------------------------------------------------- accounts (same wording as the extension)
+LIFETIME_LABELS = {
+    "session": "This session only (default)", "1h": "1 hour", "24h": "24 hours", "7d": "7 days",
+    "30d": "30 days", "until_removed": "Until I remove it",
+}
+PROVENANCE = {"exchange_reported": "reported by exchange", "derived": "calculated", "estimate": "estimate"}
+
+
+def yes_no(v: Any) -> str:
+    return "unknown" if v is None else ("yes" if v else "no")
+
+
+def provenance_label(p: Any) -> str:
+    return PROVENANCE.get(p, p) if isinstance(p, str) else ""
+
+
+def key_permissions(c: dict[str, Any]) -> dict[str, Any]:
+    p = c.get("permissions")
+    return p if isinstance(p, dict) else {}
+
+
+def connection_stored(c: dict[str, Any]) -> str:
+    life = text(c.get("lifetime"), "")
+    if life == "session":
+        expiry = "ends when the engine stops"
+    else:
+        expiry = f"expires {fmt_ms(c.get('expires_ms'))}" if c.get("expires_ms") else "until you remove it"
+    return f"{LIFETIME_LABELS.get(life, life)}; {expiry}"
+
+
+def connection_can_trade(c: dict[str, Any]) -> bool:
+    p = key_permissions(c)
+    return c.get("environment") == "testnet" and bool(p.get("spot_trade") or p.get("derivatives_trade"))
+
+
+def permissions_line(c: dict[str, Any]) -> str:
+    p = key_permissions(c)
+    trade = p.get("spot_trade") or p.get("derivatives_trade")  # same truthiness as the extension's `||`
+    return (f"read {yes_no(p.get('read'))} · trade {yes_no(trade)} · withdraw {yes_no(p.get('withdraw'))} · "
+            f"transfer {yes_no(p.get('transfer'))}")
+
+
+def connection_name(c: dict[str, Any]) -> str:
+    return text(c.get("label"), "") or text(c.get("exchange"), "")
+
+
+def connection_title(c: dict[str, Any]) -> str:
+    env = "Live · read-only" if c.get("environment") == "live" else "Testnet"
+    return f"{connection_name(c)} · {env}" + (" · Trading Mode on" if c.get("trading_enabled") else "")
+
+
+def connection_choice(c: dict[str, Any]) -> str:
+    return f"{connection_name(c)} ({text(c.get('environment'), '')})"
+
+
+def journal_summary(row: dict[str, Any]) -> str:
+    """'buy 0.1 BTCUSDT limit @ 99.5' from a journal row's request_json; the client order id if unreadable."""
+    coid = text(row.get("client_order_id"), "")
+    try:
+        r = json.loads(row.get("request_json") or "")
+    except (TypeError, ValueError):
+        return coid
+    if not isinstance(r, dict):
+        return coid
+
+    def g(k: str) -> str:
+        v = r.get(k)
+        return "" if v is None else str(v)
+    price = g("price")
+    return f"{g('side')} {g('quantity')} {g('symbol')} {g('type')}" + (f" @ {price}" if price and price != "None" else "")
+
+
+def preview_title(order: Any) -> str:
+    o = order if isinstance(order, dict) else {}
+    price = o.get("price")
+    return (f"{text(o.get('side'), '').upper()} {text(o.get('quantity'), '')} {text(o.get('symbol'), '')} · "
+            f"{text(o.get('type'), '')}" + (f" @ {text(price)}" if price else ""))
+
+
+def estimate_lines(estimates: Any) -> list[str]:
+    """One line per preview estimate, always with its provenance label."""
+    out = []
+    for k, v in (estimates.items() if isinstance(estimates, dict) else []):
+        e = v if isinstance(v, dict) else {}
+        if "value" in e:
+            value = text(e.get("value"), "not estimated")
+        else:
+            value = f"{text(e.get('side'), '')} {text(e.get('quantity'), '')}".strip()
+        line = f"{str(k).replace('_', ' ')}: {value}"
+        if e.get("asset"):
+            line += f" {text(e.get('asset'))}"
+        line += f" ({provenance_label(e.get('provenance'))})"
+        if e.get("note"):
+            line += f" — {text(e.get('note'))}"
+        out.append(line)
+    return out
+
+
+def performance_rows(r: dict[str, Any]) -> list[tuple[str, str]]:
+    return [
+        ("Closed trades", text(r.get("trades"))), ("Win rate", f"{text(r.get('win_rate_pct'))}%"),
+        ("Net P&L", text(r.get("net_pnl"))), ("Expectancy / trade", text(r.get("expectancy_per_trade"))),
+        ("Average win", text(r.get("average_win"))), ("Average loss", text(r.get("average_loss"))),
+        ("Profit factor", text(r.get("profit_factor"))), ("Max drawdown", text(r.get("max_drawdown"))),
+        ("Fees paid", text(r.get("fees_paid"))),
+    ]

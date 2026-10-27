@@ -31,12 +31,15 @@ def draw_chart(n=30, rising=True, w=900, h=500, title="SANDUSDT Perpetual 1h MA(
 
 
 def fake_ocr(title_text, axis_text, conf=92.0):
+    """Title reads have no whitelist; each axis row read (numeric whitelist) returns the next axis word."""
+    axis = axis_text.split()
     calls = []
 
-    def runner(png, psm):
+    def runner(png, psm, whitelist=None):
+        if whitelist is None:
+            return [{"text": t, "conf": conf, "left": 0, "top": 0} for t in title_text.split()]
         calls.append(psm)
-        text = title_text if len(calls) == 1 else axis_text
-        return [{"text": t, "conf": conf, "left": 0, "top": 0} for t in text.split()]
+        return [{"text": axis[(len(calls) - 1) % len(axis)], "conf": conf, "left": 0, "top": 0}]
     return runner
 
 
@@ -134,3 +137,128 @@ def test_without_opencv_fake_images_are_still_rejected(monkeypatch):
         analyze_screenshot(b"\x89PNG\r\n\x1a\n000")
     out = analyze_screenshot(tiny_png())
     assert out["status"] == "OPENCV_UNAVAILABLE"
+
+
+# ---------- price-axis OCR: parsing and scale sanity (no tesseract needed) ----------
+
+from my_ai_trading.chartvision import (axis_consistency, fits_grid, parse_axis_number,  # noqa: E402
+                                       read_price_axis, run_ocr, tesseract_runner)
+
+
+def test_parse_axis_number_separators_and_leading_zeros():
+    assert parse_axis_number("65,312.50") == 65312.5
+    assert parse_axis_number("1,234,567") == 1234567.0
+    assert parse_axis_number("0.000123") == 0.000123
+    assert parse_axis_number("0,0534") == 0.0534      # a decimal comma: thousands groups never start with 0
+    assert parse_axis_number("13,10") == 13.1         # not a 3-digit group, so a decimal comma
+    assert parse_axis_number("1,250") == 1250.0       # a valid thousands group wins over a decimal comma
+    assert parse_axis_number(" 2200.0 ") == 2200.0
+    for bad in ("", ".565", "1,2,3", "1..2", "12a", "-5", "1.2.3", "1,23,456", "1234567890"):
+        assert parse_axis_number(bad) is None, bad
+
+
+def _axis(*rows):
+    """(text, y) rows -> OCR words shaped like read_price_axis output."""
+    return [{"text": t, "conf": 95.0, "left": 0, "top": y - 5, "height": 10} for t, y in rows]
+
+
+def test_axis_consistency_flags_misreads_off_the_scale():
+    words = _axis(("2900.0", 100), ("2800.0", 150), ("2708.0", 200), ("2600.0", 250), ("26000", 300),
+                  ("2400.0", 350))
+    check = axis_consistency(words)
+    assert check["step"] == 100.0 and check["slope"] < 0
+    assert check["consistent"] == {0, 1, 3, 5}  # 2708 is off the step grid, 26000 off the line
+    p = parse_chart_text([], words)
+    assert p["price_axis_labels"] == [2400.0, 2600.0, 2800.0, 2900.0]
+    assert p["price_axis_outliers"] == [2708.0, 26000.0] and p["price_axis_step"] == 100.0
+
+
+def test_axis_consistency_tolerates_a_hidden_label_and_rejects_constant_offsets():
+    # the 1.6 label is hidden behind the price tag: a double gap, still one step per spacing
+    words = _axis(("1.9", 86), ("1.8", 147), ("1.7", 209), ("1.5", 331), ("1.4", 392), ("1.3", 454))
+    assert axis_consistency(words)["consistent"] == set(range(6))
+    # every label misread by the same offset still looks evenly spaced, but is not on whole steps
+    shifted = _axis(("1,708,000", 70), ("1,658,000", 135), ("1,608,000", 200), ("1,558,000", 265))
+    assert axis_consistency(shifted)["consistent"] == set()
+
+
+def test_axis_consistency_needs_three_labels_and_a_downward_scale():
+    two = _axis(("0.0500", 100), ("0.0480", 200))
+    assert axis_consistency(two) == {"step": None, "consistent": {0, 1}}  # too few to judge: reported as read
+    upside_down = _axis(("1.0", 100), ("1.1", 150), ("1.2", 200), ("1.3", 250))
+    assert axis_consistency(upside_down)["step"] is None
+    low_conf = [dict(w, conf=10.0) for w in _axis(("3.0", 100), ("2.0", 150), ("1.0", 200))]
+    assert axis_consistency(low_conf) == {"step": None, "consistent": set()}
+
+
+def test_fits_grid_is_exact():
+    check = {"step": 0.005, "slope": -0.0001, "intercept": 0.6}
+    assert fits_grid(0.59, 100, check)
+    assert not fits_grid(0.591, 90, check)   # off the step grid
+    assert not fits_grid(0.58, 100, check)   # a whole step, but at the wrong height
+
+
+def _axis_image(labels, dark=True):
+    img = np.full((80 + 50 * len(labels), 700, 3), 25 if dark else 255, np.uint8)
+    color = (210, 210, 210) if dark else (40, 40, 40)
+    for k, lab in enumerate(labels):
+        cv2.putText(img, lab, (600, 60 + 50 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+    y = 60 + 50 * len(labels) - 10
+    cv2.rectangle(img, (595, y - 16), (699, y + 6), (8, 153, 129), -1)  # a colored price tag ...
+    cv2.putText(img, "9.99", (604, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)  # ... is not a row
+    return img
+
+
+def test_read_price_axis_cuts_one_light_row_image_per_label():
+    calls = []
+
+    def runner(png, psm, whitelist=None):
+        img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_GRAYSCALE)
+        calls.append((psm, whitelist, img.mean() > 128))  # dark text on a light background
+        return []
+
+    words = read_price_axis(_axis_image(["13.30", "13.25", "13.20", "13.15", "13.10"]), runner)
+    assert len(words) == 5 and all(w["text"] == "" for w in words)
+    assert set(calls) == {(7, "0123456789.,", True)}  # one text line per call, numeric whitelist
+
+
+def test_axis_ocr_time_is_bounded_and_engine_failure_is_reported(monkeypatch):
+    import my_ai_trading.chartvision as cvm
+    calls = []
+    monkeypatch.setattr(cvm, "AXIS_DEADLINE_S", -1.0)  # deadline already passed: no OCR call may start
+    words = read_price_axis(_axis_image(["3.0", "2.0", "1.0"]), lambda *a: calls.append(a) or [])
+    assert len(words) == 3 and calls == []
+    monkeypatch.setattr(cvm, "AXIS_DEADLINE_S", 10.0)
+
+    def broken(png, psm, whitelist=None):
+        raise cvm.OcrUnavailable("OCR timed out")
+    assert run_ocr(_axis_image(["3.0", "2.0", "1.0"]), broken)["status"] == "OCR_UNAVAILABLE"
+
+
+def test_tesseract_runner_uses_fixed_argv_without_shell(monkeypatch):
+    import subprocess
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(argv=argv, **kw)
+        return subprocess.CompletedProcess(argv, 0, stdout=b"level\n", stderr=b"")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tesseract")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert tesseract_runner(b"png", 7, "0123456789.,") == []
+    assert seen["argv"] == ["/usr/bin/tesseract", "stdin", "stdout", "--psm", "7", "--oem", "1", "--dpi", "300",
+                            "-c", "tessedit_char_whitelist=0123456789.,", "tsv"]
+    assert seen["input"] == b"png" and seen["timeout"] == 15 and "shell" not in seen
+    assert seen["env"]["OMP_THREAD_LIMIT"] == "1"
+    with pytest.raises(ValueError):
+        tesseract_runner(b"png", 7, "0-9;rm")
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract not installed")
+def test_real_tesseract_reads_a_clean_axis_in_both_themes():
+    labels = ["0.000140", "0.000130", "0.000120", "0.000110", "0.000100", "0.000090"]
+    for dark in (True, False):
+        out = run_ocr(_axis_image(labels, dark))
+        assert out["status"] == "OK"
+        p = out["parsed"]
+        assert p["price_axis_labels"] == sorted(float(x) for x in labels), dark
+        assert p["price_axis_outliers"] == [] and p["price_axis_step"] == 0.00001

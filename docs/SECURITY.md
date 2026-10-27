@@ -8,7 +8,7 @@
 - `.env.example` / `.env.sample` may contain **variable names and EMPTY or obviously fake values only**. Never copy actual credentials into examples or tests.
 - `.gitignore` protects only **untracked files matched by its rules**. Already-tracked files, `git add -f`, secrets in ordinary source/Markdown, and previously committed history are not secured by `.gitignore`.
 - Do not feed trade-account identifiers, portfolio data, private strategies or exchange credentials into third-party LLM/Vision providers without explicit opt-in; never send screenshots containing secrets.
-- MVP uses **public Binance market-data endpoints only**, requires zero exchange trading keys, and must not call order/private-account endpoints. Do not store exchange or LLM provider tokens in frontend bundles. Backend secrets (if ever introduced) belong in environment/injected secret storage, not Git.
+- Public analysis uses **public market-data endpoints only** and needs no keys. Exchange accounts (R8, `AGENTS.md` §2) are opt-in: live keys must be read-only (keys with trade, withdrawal or transfer rights are rejected at connection time), and orders go only to official testnet/demo environments. Exchange credentials are stored only in process memory or the OS credential vault with a user-chosen expiry, never in Git, SQLite, `.env`, browser storage, frontend bundles, logs, crash reports or LLM prompts, and API responses never return them.
 
 ## 2. Local secret gate: enable once after reviewing hooks
 
@@ -57,6 +57,6 @@ For other paths use `git rm --cached -- <path>` (after confirming the target). I
 
 ## 5. Test boundaries for a trading application
 
-- Use mocked feeds, offline fixtures, test accounts, and bounded spend. Avoid real-money orders, real-account access, unsupported scraping and any automated trading in the initial release.
+- Use mocked feeds, offline fixtures, official testnet/demo accounts, and bounded spend. No real-money orders, withdrawals, unsupported scraping or automated trading. Live accounts are read-only and are never used by automated tests.
 - Closed-candle and UTC rules, time series integrity, deduplicated alerts, rate limiting/backoff, provider timeouts, LLM per-user spend caps and tenant isolation should be independently tested before release.
 - Sensitive datasets, model checkpoints, screenshots and market provider licensing require explicit scope and storage handling. Never assume a Python test suite or local hook proves the system is completely secure.

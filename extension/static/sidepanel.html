@@ -10,7 +10,7 @@
   </head>
   <body>
     <header class="inst" aria-label="Instrument">
-      <p class="readonly-note">Read-only research · no orders · closed bars only</p>
+      <p class="readonly-note">Research first · live accounts read-only · testnet orders only · closed bars only</p>
       <p id="inst-summary" aria-live="polite"></p>
       <form id="inst-form" class="inst-form" novalidate>
         <label for="inst-symbol" class="sr-only">Symbol</label>
@@ -44,6 +44,7 @@
         <button type="button" role="tab" id="tab-analysis" data-tab="analysis" aria-controls="panel-analysis" aria-selected="true">Analysis</button>
         <button type="button" role="tab" id="tab-copilot" data-tab="copilot" aria-controls="panel-copilot" aria-selected="false" tabindex="-1">Copilot</button>
         <button type="button" role="tab" id="tab-studio" data-tab="studio" aria-controls="panel-studio" aria-selected="false" tabindex="-1">Studio</button>
+        <button type="button" role="tab" id="tab-accounts" data-tab="accounts" aria-controls="panel-accounts" aria-selected="false" tabindex="-1">Accounts</button>
         <button type="button" role="tab" id="tab-alerts" data-tab="alerts" aria-controls="panel-alerts" aria-selected="false" tabindex="-1">Alerts</button>
         <button type="button" role="tab" id="tab-reports" data-tab="reports" aria-controls="panel-reports" aria-selected="false" tabindex="-1">Reports</button>
         <button type="button" role="tab" id="tab-usage" data-tab="usage" aria-controls="panel-usage" aria-selected="false" tabindex="-1">Usage</button>
@@ -56,6 +57,7 @@
       <section id="panel-analysis" role="tabpanel" aria-labelledby="tab-analysis" tabindex="0"></section>
       <section id="panel-copilot" role="tabpanel" aria-labelledby="tab-copilot" tabindex="0" hidden></section>
       <section id="panel-studio" role="tabpanel" aria-labelledby="tab-studio" tabindex="0" hidden></section>
+      <section id="panel-accounts" role="tabpanel" aria-labelledby="tab-accounts" tabindex="0" hidden></section>
       <section id="panel-alerts" role="tabpanel" aria-labelledby="tab-alerts" tabindex="0" hidden></section>
       <section id="panel-reports" role="tabpanel" aria-labelledby="tab-reports" tabindex="0" hidden></section>
       <section id="panel-usage" role="tabpanel" aria-labelledby="tab-usage" tabindex="0" hidden></section>

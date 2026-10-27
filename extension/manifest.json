@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "My AI Trading (local, read-only)",
+  "name": "My AI Trading (local)",
   "short_name": "My AI Trading",
   "version": "0.1.0",
-  "description": "Read-only market research side panel for the local My AI Trading engine. No orders, no exchange credentials, no page scraping.",
+  "description": "Market research side panel for the local My AI Trading engine. Live exchange accounts are read-only; orders go only to testnets after you confirm each one. No page scraping.",
   "minimum_chrome_version": "116",
   "action": {
     "default_title": "Open My AI Trading side panel",
