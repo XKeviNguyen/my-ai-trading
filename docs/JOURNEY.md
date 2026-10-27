@@ -16,7 +16,8 @@ For the current feature status, see the [README](../README.md) and [PROGRESS.md]
 | 2026-10-27 | Four code review findings on PR #2 fixed, each with a regression test | `2c9c49c` |
 | 2026-10-27 | Neon night design system for the Chrome side panel and the desktop app | PR #3 |
 | 2026-10-27 | Exchange accounts and testnet Trading Mode (R8): Binance, Bybit, OKX, Interactive Brokers paper | PR #5 |
-| 2026-10-27 | README rebuilt as a visual tour: architecture, workflows, database, screenshots | `docs/readme-showcase` |
+| 2026-10-27 | README rebuilt as a visual tour: architecture, workflows, database, screenshots | PR #6 |
+| 2026-10-27 | Independent six-breaker audit of `main` (`0586cd1`): not release-ready, 4 High findings | `docs/audit-2026-10-27` |
 
 ## Starting point
 
@@ -281,6 +282,31 @@ The README described features, but readers could not see how the parts fit toget
 
 **Route listings can mislead.** A script that listed the API routes showed none of the account or trading routes, because this FastAPI version nests included routers. The tests proved the routes exist; the README table was built from the router source instead.
 
+## Phase 8: an independent six-breaker audit
+
+After R8 and the README were merged, we audited `main` (`0586cd1`) as if someone else had written it. Six read-only breakers (security, data, flow and concurrency, environment, performance, simplicity) attacked an isolated copy of the repository in parallel; nobody changed product code during the audit. The full report is [audits/2026-10-27-six-breaker-audit.md](audits/2026-10-27-six-breaker-audit.md).
+
+**Verdict: not release-ready.** All three test suites were green (383 + 41 + 95, no skips), and the core boundaries held under attack: no path to a live order at any layer, no secret in the database, logs, responses or git history, and every indicator matched an independent numpy/pandas oracle. But the audit confirmed 4 High and 19 Medium findings that the tests had never exercised.
+
+| High finding | What a user could experience |
+|---|---|
+| An acknowledged order could be declared "never arrived" | The app suggested placing a new order while the first one existed: a duplicate |
+| An order the exchange reported as NEW could later be downgraded to NOT_FOUND | The same duplicate risk, e.g. after an IBKR gateway session change |
+| The rule compiler changed explicit timeframes and dropped negations | "1 month" became 1-minute bars; "does not close above" became "closes above"; the user could approve a rule that means something else |
+| Truncated futures history invented trades | A +10 realized gain was reported as a short trade with P&L 0 |
+
+### Problems and how we solved them
+
+**Green tests had hidden the riskiest paths.** Every High finding sat in behavior the suites did not cover: late or missing exchange listings, words around a recognized phrase, fill histories that start mid-position. The fix plan pairs each finding with the regression test that would have caught it.
+
+**"Not found" was again treated as proof.** Phase 6 taught us that "unknown is not no", yet the 60-second NOT_FOUND rule still turned repeated empty lookups into permission to place a new order. A lesson written in prose was not enough; the remediation encodes it in the state machine (never downgrade an acknowledged or exchange-reported order).
+
+**Every serious claim was re-run by the lead.** Breaker reproductions ran inline because their read-only mode forbade creating files. The lead therefore re-ran the four Highs and four Mediums with saved scripts before reporting them as confirmed.
+
+**An audit harness touched a real host.** One breaker run built the default app and sent a request with a dummy, non-secret test key to the official Binance testnet, which rejected it. No real credential was involved, and we recorded it as an incident: audit harnesses must always inject fake adapters.
+
+**Some checks could not run, and we said so.** Security scanners were not installed, real-browser and real-display GUI tests had no isolated environment, and real testnets had no authorized keys. They are listed as BLOCKED, not counted as passes.
+
 ## Lessons we keep
 
 1. **Count closed bars at every layer.** Most of our data bugs came from the boundary between forming and closed candles.
@@ -294,6 +320,7 @@ The README described features, but readers could not see how the parts fit toget
 9. **Look at the real thing.** Screenshots of the real panel found layout bugs that every unit test had passed.
 10. **Unknown is not "no".** A missing permission flag, a "not found" order and a 3xx response all mean "we do not know yet". Treat them as unknown and fail closed.
 11. **Check exchange facts against the docs, every time.** APIs change: hosts move, fields disappear, codes gain meanings.
+12. **Audit what you merged as if a stranger wrote it.** Green suites only prove the paths someone thought to test. Adversarial, read-only breakers with independent oracles found what the tests missed.
 
 ## What's next
 
