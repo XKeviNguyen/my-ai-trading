@@ -21,6 +21,8 @@ UI_FONT, DATA_FONT = "Chakra Petch", "Share Tech Mono"
 
 NEON = {
     "ground": "#0b0a1c", "surface": "#12112a", "raised": "#1b1a3a", "rule": "#262552", "rule_strong": "#3a3873",
+    # Edges of text fields and drop-downs: at least 3:1 against ground, surface and raised (WCAG 1.4.11).
+    "control_edge": "#6e6aae",
     "ink": "#eceaff", "ink_2": "#c3c0e8", "muted": "#9894c4",
     "persp": "#8aa4ff", "ai": "#ff6cf0", "risk": "#ffb23e", "event": "#36f1ff", "fault": "#ff5d7d", "fresh": "#a4ff6a",
     "on_ink": "#0b0a1c",
@@ -91,15 +93,22 @@ QPushButton:focus, QToolButton:focus, QLineEdit:focus, QComboBox:focus, QPlainTe
     outline: none; border: 2px solid {t['event']};
 }}
 QLineEdit, QComboBox, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
-    background: {t['ground']}; border: 1px solid {t['rule_strong']}; border-radius: 4px; padding: 3px 6px;
+    background: {t['ground']}; border: 1px solid {t['control_edge']}; border-radius: 4px; padding: 3px 6px;
 }}
 """
 
 
 def high_contrast_requested(app: QApplication) -> bool:
-    hints = app.styleHints()
-    return hasattr(hints, "accessibility") and \
-        hints.accessibility().contrastPreference() == Qt.ContrastPreference.HighContrast
+    """True when the OS asks for high contrast. Needs Qt >= 6.10 (QStyleHints.accessibility); on an older Qt, or
+    if any part of the API is missing or fails, it answers False instead of crashing the app at start-up."""
+    try:
+        accessibility = getattr(app.styleHints(), "accessibility", None)
+        preference = getattr(Qt, "ContrastPreference", None)
+        if accessibility is None or preference is None:
+            return False
+        return accessibility().contrastPreference() == preference.HighContrast
+    except (AttributeError, RuntimeError, TypeError):
+        return False
 
 
 def apply(app: QApplication) -> dict[str, str] | None:

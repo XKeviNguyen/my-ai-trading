@@ -34,7 +34,7 @@ class MetricRef(_Strict):
                   "prior_low", "atr_wilder", "rsi_wilder", "adx", "bollinger_percent_b", "macd_line",
                   "macd_histogram"]
     timeframe: TimeframeCode
-    period: int | None = Field(default=None, ge=1, le=500)
+    period: int | None = Field(default=None, ge=1, le=500, strict=True)  # true or "20" is not a period
     bar: Literal["last_closed", "previous_closed"] = "last_closed"
 
     @model_validator(mode="after")
@@ -57,10 +57,17 @@ class Compare(_Strict):
     op: Literal[">", ">=", "<", "<=", "crosses_above", "crosses_below"]
     right: MetricRef | float
 
+    @field_validator("right", mode="before")  # before coercion, or JSON true is already 1.0 (DATA-11)
+    @classmethod
+    def _not_bool(cls, v: Any) -> Any:
+        if isinstance(v, (bool, str)):  # JSON true or "1" is not a number
+            raise ValueError("comparison value must be a finite number or a metric reference")
+        return v
+
     @field_validator("right")
     @classmethod
     def _finite(cls, v: Any) -> Any:
-        if isinstance(v, bool) or (isinstance(v, float) and not isfinite(v)):
+        if isinstance(v, float) and not isfinite(v):
             raise ValueError("comparison value must be a finite number or a metric reference")
         return v
 
@@ -197,8 +204,9 @@ SeriesGetter = Callable[[str], CandleSeries]
 
 
 class _Ctx:
-    def __init__(self, get_series: SeriesGetter, as_of_ms: int):
-        self.get, self.as_of = get_series, as_of_ms
+    def __init__(self, get_series: SeriesGetter, as_of_ms: int, trigger: str):
+        self.get, self.as_of, self.trigger = get_series, as_of_ms, trigger
+        self._previous: _Ctx | None = None
         self.tails: dict[str, tuple] = {}
         self.bar_times: dict[str, str | None] = {}
         self.leaves: list[dict[str, Any]] = []
@@ -214,6 +222,15 @@ class _Ctx:
                 self.tails[tf] = t
                 self.bar_times[tf] = utc_iso(t[-1].close_time_ms + 1) if t else None
         return self.tails[tf]
+
+    def previous(self) -> "_Ctx | None":
+        """The state as of the previous trigger close, so every timeframe in a crossing uses the same instant."""
+        if self._previous is None:
+            t = self.tail(self.trigger)
+            if len(t) < 2:
+                return None
+            self._previous = _Ctx(self.get, t[-1].open_time_ms, self.trigger)
+        return self._previous
 
 
 def metric_value(m: MetricRef, tail: tuple) -> float | None:
@@ -258,8 +275,12 @@ def _value(ref: MetricRef | float, ctx: _Ctx, *, previous: bool = False) -> floa
     if not isinstance(ref, MetricRef):
         return float(ref)
     if previous:
-        ref = ref.model_copy(update={"bar": "previous_closed"})
-    return metric_value(ref, ctx.tail(ref.timeframe))
+        prev = ctx.previous()
+        if prev is None:
+            return None
+        ctx = prev
+    v = metric_value(ref, ctx.tail(ref.timeframe))
+    return None if v is None else float(v)  # numpy inputs must not turn results into np.bool_ (DATA-12)
 
 
 def _eval(node: Any, ctx: _Ctx) -> bool | None:
@@ -298,7 +319,7 @@ def _eval(node: Any, ctx: _Ctx) -> bool | None:
 
 
 def evaluate(rule: StrategyRule, get_series: SeriesGetter, *, as_of_ms: int) -> dict[str, Any]:
-    ctx = _Ctx(get_series, as_of_ms)
+    ctx = _Ctx(get_series, as_of_ms, rule.trigger_timeframe)
     r = _eval(rule.condition, ctx)
     result = "MATCH" if r is True else "NO_MATCH" if r is False else "INSUFFICIENT_DATA"
     action = rule.on_match if r is True else rule.otherwise if r is False else "INSUFFICIENT_DATA"

@@ -253,3 +253,34 @@ def test_a_missing_or_malformed_permission_flag_is_unknown_and_the_live_key_is_r
     from my_ai_trading.accounts.adapters.base import ExchangeUnavailable
     with pytest.raises(ExchangeUnavailable):
         a.permissions(CRED)
+
+
+def test_a_malformed_reply_after_sending_is_an_unknown_outcome_not_a_crash(monkeypatch):
+    from http.client import BadStatusLine
+    from my_ai_trading.accounts.adapters import base
+
+    class Opener:
+        def open(self, req, timeout):
+            raise BadStatusLine("garbage")  # re-audit ENV-12: an order send became HTTP 500 and stayed SENDING
+    monkeypatch.setattr(base, "_OPENER", Opener())
+    with pytest.raises(base.OutcomeUnknown):
+        base.urllib_transport("POST", "https://testnet.binance.vision/api/v3/order", {}, b"x", 5.0)
+
+
+def test_an_error_reply_with_a_broken_body_keeps_its_status(monkeypatch):
+    from http.client import IncompleteRead
+    from urllib.error import HTTPError
+    from my_ai_trading.accounts.adapters import base
+
+    class Broken:
+        def read(self, *a):
+            raise IncompleteRead(b"", 10)  # verifier B: raised out of the HTTPError handler
+        def close(self):
+            pass
+
+    class Opener:
+        def open(self, req, timeout):
+            raise HTTPError(req.full_url, 400, "Bad Request", {}, Broken())
+    monkeypatch.setattr(base, "_OPENER", Opener())
+    r = base.urllib_transport("POST", "https://testnet.binance.vision/api/v3/order", {}, b"x", 5.0)
+    assert r.status == 400 and r.body == b""

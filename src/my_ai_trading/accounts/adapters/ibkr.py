@@ -33,6 +33,8 @@ order does not work until confirmed. A future UI step could show the question an
 """
 from __future__ import annotations
 
+from http.client import HTTPException
+
 import json
 import re
 import ssl
@@ -104,8 +106,15 @@ def gateway_transport(method: str, url: str, headers: dict[str, str], body: byte
                 raise ExchangeUnavailable("gateway response too large")
             return HttpResponse(resp.status, data, {k.lower(): v for k, v in resp.headers.items()})
     except HTTPError as exc:
-        return HttpResponse(exc.code, exc.read(65_536) if exc.fp else b"",
-                            {k.lower(): v for k, v in (exc.headers or {}).items()})
+        try:
+            error_body = exc.read(65_536) if exc.fp else b""
+        except (HTTPException, OSError):  # a malformed error body still carries the status code
+            error_body = b""
+        finally:
+            exc.close()
+        return HttpResponse(exc.code, error_body, {k.lower(): v for k, v in (exc.headers or {}).items()})
+    except HTTPException as exc:  # garbage reply after the request went out (ENV-12): never "not sent"
+        raise OutcomeUnknown("malformed reply after sending; the request may or may not have taken effect") from exc
     except TimeoutError as exc:
         raise OutcomeUnknown("the IBKR gateway did not answer in time; the request may or may not have taken effect") from exc
     except (URLError, OSError) as exc:
@@ -255,7 +264,7 @@ class IBKR(ExchangeAdapter):
                     symbol=str(p.get("ticker") or p.get("contractDesc") or p.get("conid")), market=market,
                     side="long" if qty > 0 else "short", quantity=abs(qty), entry_price=D(p.get("avgPrice")),
                     mark_price=D(p.get("mktPrice")), unrealized_pnl=D(p.get("unrealizedPnl")),
-                    notional=D(p.get("mktValue"))))
+                    notional=D(p.get("mktValue")), currency=str(p.get("currency") or "") or None))
             page_size = int(rows[0].get("pageSize") or 100) if rows else 100
             if len(rows) < page_size:
                 break
@@ -422,21 +431,27 @@ class IBKR(ExchangeAdapter):
         row = next((o for o in self._session_orders(account) if o.get("order_ref") == client_order_id), None)
         return self._order(row) if row else None
 
-    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str) -> Order:
+    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str,
+                     exchange_order_id: str | None = None) -> Order:
         self._require_testnet()
         current = self.query_order(cred, symbol, market, client_order_id=client_order_id)
-        if current is None:
+        # A new gateway session no longer lists older orders; the ID IBKR gave at placement still cancels them.
+        order_id = current.order_id if current is not None else exchange_order_id
+        if order_id is None:
             raise ExchangeError("IBKR does not list this order in the current gateway session; it cannot be cancelled here")
-        if not current.order_id.isdigit():
+        if not order_id.isdigit():
             raise ExchangeError("IBKR returned an invalid order ID")
         account = self._ids(cred)[0]
-        resp = self._call("DELETE", f"/iserver/account/{account}/order/{current.order_id}")
+        resp = self._call("DELETE", f"/iserver/account/{account}/order/{order_id}")
         if resp.status >= 500:
             raise OutcomeUnknown(f"IBKR answered HTTP {resp.status} to the cancel: its outcome is unknown")
         data = self.check(resp)
         if not isinstance(data, dict) or data.get("error") or data.get("msg") != "Request was submitted":
             raise ExchangeError("IBKR did not accept the cancel request"
                                 + (f": {_clean(str(data.get('error')))}" if isinstance(data, dict) and data.get("error") else ""))
+        if current is None:
+            raise OutcomeUnknown("IBKR accepted the cancel request, but this gateway session does not list the order; "
+                                 "check its status at IBKR")
         # IBKR acknowledges the request only; the cancel itself is confirmed later by the order status.
         return current.model_copy(update={"status": OrderStatus.PENDING_CANCEL})
 

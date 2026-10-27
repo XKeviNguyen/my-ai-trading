@@ -1,5 +1,6 @@
 // Methodology selection: all 20 profiles, enable/disable any (including none) and choose a mode.
 
+import { ApiError } from "../api.js";
 import type { App, View } from "../app.js";
 import { badge, h, list, nextId, setChildren, status } from "../dom.js";
 import type { Profile, Selection } from "../types.js";
@@ -45,6 +46,8 @@ export class MethodsView implements View {
   private readonly root: HTMLElement;
   private readonly app: App;
   private rows = new Map<string, RowState>();
+  /** Version tag of the settings the checkboxes show; a save sends it so stale choices never overwrite. */
+  private formEtag: string | null = null;
 
   constructor(root: HTMLElement, app: App) {
     this.root = root;
@@ -55,13 +58,14 @@ export class MethodsView implements View {
     void this.load();
   }
 
-  async load(): Promise<void> {
+  async load(notice: HTMLElement | null = null): Promise<void> {
     setChildren(this.root, status("loading", "Loading methodologies…"));
     try {
       const [profiles, settings] = await Promise.all([this.app.profiles(), this.app.settings(true)]);
+      this.formEtag = this.app.settingsEtag;
       const selected = new Map(settings.selected_methodologies.map((s) => [s.methodology_id, s.mode]));
       this.rows.clear();
-      const msg = h("div", { "aria-live": "polite" });
+      const msg = h("div", { "aria-live": "polite" }, notice);
       const save = h("button", { type: "button", class: "primary" }, "Save selection");
       save.addEventListener("click", () => void this.save(profiles, msg, save));
       const none = h("button", { type: "button" }, "Disable all");
@@ -121,9 +125,11 @@ export class MethodsView implements View {
     try {
       const s = await this.app.updateSettings((cur) => {
         cur.selected_methodologies = buildSelections(cur.selected_methodologies, profiles.map((p) => p.methodology_id), enabled);
-      });
+      }, this.formEtag);
+      this.formEtag = this.app.settingsEtag;
       setChildren(msg, status("ok", `Saved: ${s.selected_methodologies.length} methodolog${s.selected_methodologies.length === 1 ? "y" : "ies"} selected.`));
     } catch (err) {
+      if (err instanceof ApiError && err.kind === "changed_elsewhere") return void this.load(this.app.errorView(err));
       setChildren(msg, this.app.errorView(err));
     } finally {
       btn.disabled = false;

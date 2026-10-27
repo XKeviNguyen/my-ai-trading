@@ -111,6 +111,11 @@ class Card(QFrame):
     def title(self) -> str:
         return self._title
 
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self.setAccessibleName(title[:200])
+        self.title_label.setText(title)
+
 
 def card(title: str) -> tuple[Card, QVBoxLayout]:
     box = Card(title)

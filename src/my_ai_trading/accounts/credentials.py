@@ -170,7 +170,10 @@ class KeyringVault:
             import keyring  # optional dependency: pip install '.[accounts]'
         except ImportError as exc:
             raise VaultUnavailable("OS credential vault support is not installed (pip install '.[accounts]')") from exc
-        backend = keyring.get_keyring()
+        try:
+            backend = keyring.get_keyring()
+        except Exception as exc:  # any backend failure (D-Bus, ...) means no vault, never a crash (SEC-4)
+            raise VaultUnavailable(f"the OS credential vault is not available ({type(exc).__name__})") from None
         name = f"{type(backend).__module__}.{type(backend).__name__}"
         if not name.startswith(self._ALLOWED) or getattr(backend, "priority", 0) <= 0:
             raise VaultUnavailable("no secure OS credential vault is available; use a session-only connection")
@@ -181,7 +184,7 @@ class KeyringVault:
             return fn(self._service, *args)
         except self._keyring.errors.PasswordDeleteError:
             return None  # already gone
-        except self._keyring.errors.KeyringError as exc:  # locked vault, D-Bus failure, ...
+        except Exception as exc:  # KeyringError, and also RuntimeError etc. from D-Bus backends (SEC-4 / ENV-5)
             raise VaultUnavailable(f"the OS credential vault is not available ({type(exc).__name__})") from None
 
     def put(self, key: str, value: str) -> None:
@@ -223,6 +226,11 @@ class CredentialStore:
             self._persistent = self._persistent_factory()  # raises VaultUnavailable: never a weaker fallback
         return self._persistent
 
+    def require_vault(self, lifetime: Lifetime) -> None:
+        """Raise VaultUnavailable now, before a key is sent anywhere, if this lifetime cannot be stored (ENV-4)."""
+        with self._lock:
+            self._vault(lifetime)
+
     def save(self, *, user: str, exchange: str, environment: Environment, label: str, lifetime: Lifetime,
              credential: Credential, permissions: KeyPermissions) -> ConnectionMeta:
         now = self._now_ms()
@@ -256,8 +264,17 @@ class CredentialStore:
                 raise CredentialNotFound("the key for this connection is no longer stored; reconnect to continue")
             return meta, Credential._from_vault(raw)
 
-    def update_meta(self, meta: ConnectionMeta) -> None:
-        self._meta.save_connection(meta)
+    def update_meta(self, connection_id: str, *, user: str,
+                    mutate: Callable[[ConnectionMeta], ConnectionMeta]) -> ConnectionMeta:
+        """Compare-and-set under the store lock: re-reads the metadata, so a concurrent disconnect (or a pending
+        vault deletion) is never undone by writing back a stale copy."""
+        with self._lock:
+            meta = self._meta.connection(connection_id, user)
+            if meta is None or meta.purge_pending:
+                raise CredentialNotFound("connection not found")
+            updated = mutate(meta)
+            self._meta.save_connection(updated)
+            return updated
 
     def list(self, *, user: str) -> list[ConnectionMeta]:
         now = self._now_ms()

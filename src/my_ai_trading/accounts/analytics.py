@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Callable, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -96,6 +96,14 @@ def portfolio(snapshots: list[AccountSnapshot], usd_price: Callable[[str], Decim
             if b.asset not in STABLECOINS:
                 direction["long"] += value
         for p in snap.positions:
+            if p.currency and p.currency.upper() not in STABLECOINS:  # no FX conversion here (DATA-6)
+                unpriced.append(f"{snap.exchange}:{p.symbol} position in {p.currency}")
+                positions_out.append({"exchange": snap.exchange, "symbol": p.symbol, "side": p.side,
+                                      "quantity": plain(p.quantity), "notional_usd": None, "currency": p.currency,
+                                      "unrealized_pnl": plain(p.unrealized_pnl) if p.unrealized_pnl is not None else None,
+                                      "liquidation_distance_pct": None,
+                                      "leverage": plain(p.leverage) if p.leverage is not None else None})
+                continue
             notional = abs(p.notional) if p.notional is not None else (
                 p.quantity * p.mark_price if p.mark_price is not None else None)
             if notional is not None:
@@ -120,8 +128,11 @@ def portfolio(snapshots: list[AccountSnapshot], usd_price: Callable[[str], Decim
     if allocation and gross:
         top = allocation[0]
         if Decimal(top["share_pct"]) >= Decimal(str(limits.max_asset_concentration_pct)) and top["asset"] not in STABLECOINS:
+            unpriced_positions = sum(1 for u in unpriced if " position in " in u)
+            note = (f"; {unpriced_positions} position(s) in other currencies are not included"
+                    if unpriced_positions else "")
             warnings.append(f"{top['asset']} is {top['share_pct']}% of gross exposure "
-                            f"(limit {limits.max_asset_concentration_pct:g}%)")
+                            f"(limit {limits.max_asset_concentration_pct:g}%){note}")
     return {
         "total_value_usd": {"value": fixed2(total), "provenance": "estimate",
                             "note": "exchange-reported futures equity plus spot balances valued at public prices; "
@@ -160,7 +171,11 @@ def quote_asset(symbol: str) -> str | None:
 
 
 def _quote_fee(f: Fill) -> Decimal | None:
-    """The fee if it was paid in the symbol's quote asset (so it can be subtracted from PnL), else None."""
+    """The fee if it was paid in the symbol's quote asset (so it can be subtracted from PnL), else None.
+
+    A fee the exchange did not report is unknown, not zero (DATA-10)."""
+    if f.fee is None:
+        return None
     if not f.fee:
         return ZERO
     return f.fee if f.fee_asset and f.fee_asset == quote_asset(f.symbol) else None
@@ -172,7 +187,17 @@ class TradeHistory:
     unmatched_sells: int = 0  # spot sells with no earlier buy in the loaded fills (history starts later)
 
 
+# Not "stock": IBKR fills cover 7 days and carry no realized PnL, so a sell closing an older long would become a
+# phantom short. A stock short round trip is reported as an unmatched sell instead (re-audit NEW-1).
 SHORTABLE_MARKETS = frozenset({"usdm_perpetual", "coinm_perpetual", "futures", "option"})
+SPLIT_MARKETS = frozenset({"usdm_perpetual"})  # realized PnL is in the quote asset, like the matched prices
+PNL_TOLERANCE = Decimal("0.000001")
+FEE_STEP = Decimal("1e-10")  # fee shares of partial fills are rounded here; the remainder stays with the lot
+
+
+def _share(fee: Decimal, take: Decimal, of: Decimal) -> Decimal:
+    """The part of `fee` for `take` units out of `of`: all of it for the last units, so no fee is lost or invented."""
+    return fee if take == of else (fee * take / of).quantize(FEE_STEP, rounding=ROUND_HALF_EVEN)
 
 
 def closed_trades(fills: Iterable[Fill]) -> TradeHistory:
@@ -183,9 +208,13 @@ def closed_trades(fills: Iterable[Fill]) -> TradeHistory:
     is used when the fill reports one (exchange_reported); otherwise it is computed from the matched prices
     (derived). Entry and exit fees paid in the quote asset are subtracted proportionally; fees paid in other
     assets are counted in `fees_excluded`, never mixed in. Spot cannot go short: a spot sell with no earlier buy in
-    the loaded fills is counted as unmatched. Derivatives keep short lots."""
+    the loaded fills is counted as unmatched. Derivatives and stocks keep short lots. A closing fill whose
+    position opened before the loaded history (no lot to close, non-zero realized PnL) is an
+    "exchange_reported_entry_unknown" trade, never a new lot in the other direction."""
     out: list[ClosedTrade] = []
-    lots: dict[tuple[str, str], deque[list]] = defaultdict(deque)  # -> [signed qty, price, fee per unit, excluded]
+    lots: dict[tuple[str, str], deque[list]] = defaultdict(deque)  # -> [signed qty, price, entry fee left, excluded]
+    # The same position at average cost, as exchanges compute realized PnL: [signed qty, average entry price].
+    average: dict[tuple[str, str], list] = defaultdict(lambda: [ZERO, ZERO])
     unmatched = 0
     for f in sorted(fills, key=lambda x: (x.time_ms, x.trade_id)):
         if f.quantity <= 0:
@@ -193,30 +222,51 @@ def closed_trades(fills: Iterable[Fill]) -> TradeHistory:
         quote_fee = _quote_fee(f)
         own_excluded = int(quote_fee is None)  # this fill's fee was paid in another asset
         excluded = own_excluded
-        fee_per_unit = (quote_fee or ZERO) / f.quantity
+        fill_fee = quote_fee or ZERO
         signed = f.quantity if f.side == "buy" else -f.quantity
-        book = lots[(f.symbol, f.market)]
+        book, avg = lots[(f.symbol, f.market)], average[(f.symbol, f.market)]
+        avg_closed = min(abs(signed), abs(avg[0])) if avg[0] and (avg[0] > 0) != (signed > 0) else ZERO
+        expected = avg_closed * (f.price - avg[1]) * (1 if avg[0] > 0 else -1)  # what the exchange should realize
+        avg[0] += avg_closed if signed > 0 else -avg_closed
         remaining, pnl, closed_qty, fees = signed, ZERO, ZERO, ZERO
         while remaining and book and (book[0][0] > 0) != (remaining > 0):
             lot = book[0]
             take = min(abs(remaining), abs(lot[0]))
             pnl += take * (f.price - lot[1]) * (1 if lot[0] > 0 else -1)
-            fees += take * (lot[2] + fee_per_unit)  # this lot's share of its entry fee + this fill's exit fee
+            entry_fee, exit_fee = _share(lot[2], take, abs(lot[0])), _share(fill_fee, take, abs(remaining))
+            lot[2] -= entry_fee
+            fill_fee -= exit_fee
+            fees += entry_fee + exit_fee
             excluded += lot[3]
             closed_qty += take
             lot[0] = lot[0] - take if lot[0] > 0 else lot[0] + take
             remaining = remaining + take if remaining < 0 else remaining - take
             if lot[0] == 0:
                 book.popleft()
-        if remaining < 0 and f.market not in SHORTABLE_MARKETS:
-            unmatched += 1  # spot cannot go short: this sell closes a buy older than the loaded history
-        elif remaining:
-            book.append([remaining, f.price, fee_per_unit, own_excluded])
+        # Realized PnL beyond what the known position explains (at average cost, as the exchange computes it) means
+        # the rest of the fill closed a position opened before the loaded history (DATA-2). Otherwise the fill
+        # flipped the position and the rest opens a new lot.
+        extra = ZERO
+        if remaining and not book and f.realized_pnl is not None and (not closed_qty or f.market in SPLIT_MARKETS):
+            extra = f.realized_pnl - expected
+            if abs(extra) < PNL_TOLERANCE:
+                extra = ZERO
         if closed_qty:
-            reported = f.realized_pnl is not None
+            reported = f.realized_pnl is not None and not extra
             gross = f.realized_pnl if reported else pnl
             out.append(ClosedTrade(f.symbol, "long" if f.side == "sell" else "short", closed_qty, gross - fees, fees,
                                    f.time_ms, "exchange_reported" if reported else "derived", excluded))
+        if extra:
+            out.append(ClosedTrade(f.symbol, "long" if f.side == "sell" else "short", abs(remaining),
+                                   extra - fill_fee, fill_fee, f.time_ms, "exchange_reported_entry_unknown",
+                                   own_excluded))
+        elif remaining < 0 and f.market not in SHORTABLE_MARKETS:
+            unmatched += 1  # spot and stocks: this sell closes a buy older than the loaded history
+        elif remaining:
+            book.append([remaining, f.price, fill_fee, own_excluded])
+            held = abs(avg[0])
+            avg[1] = (held * avg[1] + abs(remaining) * f.price) / (held + abs(remaining)) if held else f.price
+            avg[0] += remaining
     return TradeHistory(out, unmatched)
 
 

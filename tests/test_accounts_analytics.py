@@ -132,3 +132,116 @@ def test_futures_shorts_without_reported_pnl_are_kept_and_derived():
     h = closed_trades([fill(1, "sell", "1", "100", **fut), fill(2, "buy", "1", "90", **fut)])
     assert [(t.side, t.pnl, t.provenance) for t in h.trades] == [("short", D("10"), "derived")]
     assert h.unmatched_sells == 0
+
+
+# --- Six-breaker remediation: DATA-2, DATA-3, DATA-6, DATA-9, DATA-10 ---
+
+def test_a_close_whose_entry_is_older_than_the_history_keeps_the_exchange_pnl_and_opens_no_lot():
+    fills = [fill(1, "sell", "1", "110", pnl="10", market="usdm_perpetual"),  # closes a long opened earlier
+             fill(2, "buy", "1", "100", pnl="0", market="usdm_perpetual")]    # opens a new long
+    h = closed_trades(fills)
+    assert [(t.side, t.quantity, t.pnl, t.provenance) for t in h.trades] == [
+        ("long", D("1"), D("10"), "exchange_reported_entry_unknown")]  # was: a phantom short with PnL 0
+
+
+def test_a_stock_sell_before_the_loaded_history_is_unmatched_not_a_phantom_short():
+    # Re-audit NEW-1: with stocks shortable, a sell closing a long bought before IBKR's 7-day fill window became a
+    # "short 10, pnl +100" trade. DATA-3 (real stock shorts) stays a documented limitation: they count as unmatched.
+    h = closed_trades([fill(1, "sell", "10", "100", symbol="AAPL", market="stock"),
+                       fill(2, "buy", "10", "90", symbol="AAPL", market="stock"),
+                       fill(3, "sell", "10", "95", symbol="AAPL", market="stock")])
+    assert [(t.side, t.quantity, t.pnl) for t in h.trades] == [("long", D("10"), D("50"))]
+    assert h.unmatched_sells == 1
+
+
+def test_realized_pnl_beyond_the_matched_lots_is_an_entry_unknown_close_not_a_new_lot():
+    # Re-audit NEW-3: 1 unit matched (+5); the exchange realized 25, so 2 units closed an older position (+20).
+    fills = [fill(1, "buy", "1", "105", pnl="0", market="usdm_perpetual"),
+             fill(2, "sell", "3", "110", pnl="25", market="usdm_perpetual"),
+             fill(3, "buy", "1", "100", pnl="0", market="usdm_perpetual"),
+             fill(4, "sell", "1", "120", pnl="20", market="usdm_perpetual")]
+    assert [(t.side, t.quantity, t.pnl, t.provenance) for t in closed_trades(fills).trades] == [
+        ("long", D("1"), D("5"), "derived"), ("long", D("2"), D("20"), "exchange_reported_entry_unknown"),
+        ("long", D("1"), D("20"), "exchange_reported")]
+
+
+def test_a_flip_whose_realized_pnl_matches_the_lots_opens_the_new_position():
+    fills = [fill(1, "buy", "1", "100", pnl="0", market="usdm_perpetual"),
+             fill(2, "sell", "3", "110", pnl="10", market="usdm_perpetual"),   # closes +10, opens short 2
+             fill(3, "buy", "2", "105", pnl="10", market="usdm_perpetual")]
+    assert [(t.side, t.quantity, t.pnl) for t in closed_trades(fills).trades] == [
+        ("long", D("1"), D("10")), ("short", D("2"), D("10"))]
+
+
+def test_a_position_in_another_currency_is_not_added_to_usd_exposure():
+    s = snap(positions=[Position(symbol="SAP", market="stock", side="long", quantity=D("100"), notional=D("20000"),
+                                 currency="EUR"),
+                        Position(symbol="AAPL", market="stock", side="long", quantity=D("10"), notional=D("2000"),
+                                 currency="USD")])
+    out = portfolio([s], {}.get)
+    assert out["exposure_by_direction"]["long"] == "2000.00"
+    assert out["unpriced_assets"] == ["binance:SAP position in EUR"]
+    assert [a["asset"] for a in out["allocation"]] == ["AAPL"]
+    assert [p["symbol"] for p in out["positions"]] == ["SAP", "AAPL"]  # still listed, without a USD value
+    assert out["positions"][0]["notional_usd"] is None and out["positions"][0]["currency"] == "EUR"
+    assert "1 position(s) in other currencies are not included" in " ".join(out["warnings"])
+
+
+def test_prorated_fees_are_exact_and_never_lose_a_fraction():
+    fills = [fill(1, "buy", "3", "100", "1"),
+             fill(2, "sell", "1", "100"), fill(3, "sell", "1", "100"), fill(4, "sell", "1", "100")]
+    trades = closed_trades(fills).trades
+    assert [t.fees for t in trades] == [D("0.3333333333"), D("0.3333333334"), D("0.3333333333")]
+    assert sum(t.fees for t in trades) == D("1")
+
+
+def test_a_missing_fee_is_counted_as_excluded_not_as_zero():
+    f = Fill(trade_id="2", order_id="2", symbol="BTCUSDT", market="spot", side="sell", price=D("110"),
+             quantity=D("1"), fee=None, time_ms=2_000)
+    t = closed_trades([fill(1, "buy", "1", "100"), f]).trades[0]
+    assert t.fees_excluded == 1
+
+
+def test_performance_prints_plain_numbers(monkeypatch):
+    from my_ai_trading.accounts.credentials import CredentialStore, MemoryVault
+    from my_ai_trading.accounts.service import AccountService
+    from my_ai_trading.store import Store
+    svc = AccountService(CredentialStore(Store(), persistent_vault=MemoryVault))
+    fills = [fill(1, "buy", "3", "100", "1"), fill(2, "sell", "1", "110"), fill(3, "sell", "2", "110")]
+    monkeypatch.setattr(svc, "fills", lambda *a, **kw: fills)
+    out = svc.performance("c1", user="local", symbol="BTCUSDT", market="spot")
+    assert [(t["pnl"], t["fees"]) for t in out["closed_trades"]] == [("9.6666666667", "0.3333333333"),
+                                                                     ("19.3333333333", "0.6666666667")]
+    assert all("E" not in t["pnl"] + t["fees"] for t in out["closed_trades"])  # re-audit DATA-9: "0E-10"
+
+
+def _exchange_realized(fills_spec):
+    """Oracle: the realized PnL an exchange reports, at average cost, for fills that start flat."""
+    pos, avg, out = D(0), D(0), []
+    for side, qty, price in fills_spec:
+        qty, price = D(qty), D(price)
+        signed = qty if side == "buy" else -qty
+        closing = min(qty, abs(pos)) if pos and (pos > 0) != (signed > 0) else D(0)
+        rp = closing * (price - avg) * (1 if pos > 0 else -1)
+        pos += closing if signed > 0 else -closing
+        rest = qty - closing
+        if rest:
+            avg = (abs(pos) * avg + rest * price) / (abs(pos) + rest) if pos else price
+            pos += rest if signed > 0 else -rest
+        out.append(rp)
+    return out
+
+
+def test_average_cost_realized_pnl_never_creates_entry_unknown_trades_when_history_is_complete():
+    # Verifier A: FIFO PnL was compared with the exchange's average-cost PnL, giving phantom trades.
+    import random
+    spec = [("buy", "1", "100"), ("buy", "1", "200"), ("sell", "1", "150"), ("sell", "2", "150"), ("buy", "1", "140")]
+    rng = random.Random(7)
+    cases = [spec] + [[(rng.choice(("buy", "sell")), str(rng.randint(1, 4)), str(rng.randint(80, 120)))
+                       for _ in range(rng.randint(2, 12))] for _ in range(400)]
+    for case in cases:
+        rps = _exchange_realized(case)
+        fills = [fill(i, s, q, p, pnl=str(rp), market="usdm_perpetual") for i, ((s, q, p), rp) in enumerate(zip(case, rps))]
+        trades = closed_trades(fills).trades
+        assert all(t.provenance != "exchange_reported_entry_unknown" for t in trades), case
+        assert sum(t.pnl for t in trades) == sum(rps), case  # every realized unit counted once

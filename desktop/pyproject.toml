@@ -10,8 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Proprietary - no license chosen yet"}
 # Only the Essentials wheel (QtCore/QtGui/QtWidgets) is needed; the full PySide6 meta-package also
-# pulls in WebEngine and other add-ons the client does not use.
-dependencies = ["PySide6-Essentials>=6.8,<7"]
+# pulls in WebEngine and other add-ons the client does not use. 6.10 is the first release with
+# QStyleHints.accessibility(), which the theme uses to yield to the OS high-contrast setting.
+dependencies = ["PySide6-Essentials>=6.10,<7"]
 
 [project.optional-dependencies]
 # Tests start the real engine API in-process, so they need the core package with its api/test extras

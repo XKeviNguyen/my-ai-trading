@@ -22,6 +22,8 @@ export class App {
   instrumentSource: "tab" | "manual" | null = null;
   analysisTf = "1h";
   private settingsCache: UserSettings | null = null;
+  /** Version tag (ETag) of `settingsCache`; saves send it as If-Match. */
+  private settingsTag: string | null = null;
   private profilesCache: Profile[] | null = null;
   private listeners: Listener[] = [];
   private settingsListeners: Listener[] = [];
@@ -56,17 +58,44 @@ export class App {
     return this.settingsCache;
   }
 
+  get settingsEtag(): string | null {
+    return this.settingsTag;
+  }
+
   async settings(force = false): Promise<UserSettings> {
-    if (!this.settingsCache || force) this.settingsCache = await this.client.getSettings();
+    if (!this.settingsCache || force) {
+      const v = await this.client.getSettingsVersioned();
+      this.settingsCache = v.data;
+      this.settingsTag = v.etag;
+    }
     return this.settingsCache;
   }
 
-  /** Fetch the current settings, apply `mutate` to a copy, and PUT the full object back. */
-  async updateSettings(mutate: (s: UserSettings) => void): Promise<UserSettings> {
-    const current = await this.client.getSettings();
-    const copy = structuredClone(current);
+  /**
+   * GET the current settings (with their version tag), apply `mutate` to a copy and PUT the full object back with
+   * If-Match. `baseEtag` is the tag of the settings a form was rendered from: pass it so a form that shows stale
+   * values cannot overwrite a newer change. On 412 (kind "changed_elsewhere") nothing is saved and nothing is
+   * retried: the cache is reloaded, listeners are told, and the error is rethrown for the view to show.
+   */
+  async updateSettings(mutate: (s: UserSettings) => void, baseEtag?: string | null): Promise<UserSettings> {
+    const current = await this.client.getSettingsVersioned();
+    const copy = structuredClone(current.data);
     mutate(copy);
-    this.settingsCache = await this.client.putSettings(copy);
+    try {
+      const saved = await this.client.putSettingsVersioned(copy, baseEtag ?? current.etag);
+      this.settingsCache = saved.data;
+      this.settingsTag = saved.etag;
+    } catch (err) {
+      if (err instanceof ApiError && err.kind === "changed_elsewhere") {
+        try {
+          await this.settings(true);
+          this.settingsListeners.forEach((fn) => fn());
+        } catch {
+          /* keep the original error */
+        }
+      }
+      throw err;
+    }
     this.settingsListeners.forEach((fn) => fn());
     return this.settingsCache;
   }

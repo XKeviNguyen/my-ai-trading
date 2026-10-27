@@ -1,9 +1,11 @@
 # Chrome Side Panel extension (R5)
 
-A Manifest V3 **Side Panel** client for the local, read-only My AI Trading engine. It shows the
+A Manifest V3 **Side Panel** client for the local My AI Trading engine (read-only for live accounts; testnet orders only after a per-order confirmation). It shows the
 engine's analysis next to a Binance chart; all analysis is computed by the Python engine on
-`http://127.0.0.1:8765`. The extension holds no strategy logic, places no orders and uses no
-exchange credentials.
+`http://127.0.0.1:8765`. The extension holds no strategy logic. Since R8 it also has an **Accounts** tab:
+an exchange API key you type there is sent once to the local engine and is not kept by the extension.
+Live exchange connections are read-only. Orders go only to testnet/demo accounts, with Trading Mode on
+and after you confirm each order (see [ACCOUNTS_TRADING.md](ACCOUNTS_TRADING.md)).
 
 ## Build
 
@@ -42,14 +44,17 @@ is never shown again or logged, and is sent only as `Authorization: Bearer …` 
 
 | Tab | Endpoint(s) | Notes |
 |---|---|---|
-| Instrument bar | — | Symbol and market come from the **active tab URL only** (`/futures/SANDUSDT` → USD-M perpetual, `/trade/SAND_USDT?type=spot` → spot). Otherwise you type a symbol or pick one from the watchlist. Timeframe selector 1h/4h/1d/1w. |
+| Instrument bar | — | Symbol and market come from the **active tab URL only** (`/futures/SANDUSDT` → USD-M perpetual, `/trade/SAND_USDT?type=spot` → spot). Otherwise you type a symbol or pick one from the watchlist. Timeframe selector 1h/4h/1d/1w/1M. |
 | Analysis | `GET /analysis` | Freshness (`as_of_utc`, per-timeframe bar close, STALE/PROVIDER_ERROR badges), multi-timeframe summary, alignment verdict, and each selected methodology perspective on its own: applicability status, exact mode label, evaluation vs analysis timeframe, checks, unevaluated criteria, reasons, offered routes. No BUY/SELL badge and no vote across methodologies. |
 | Copilot | `POST /copilot/ask`, `/copilot/challenge`, `/copilot/vision` | Deterministic facts are shown separately from model interpretation (label, model, tokens, estimated cost) and from `fallback_reason`. Challenge My Thesis shows supporting vs contradicting evidence, assumptions, unknowns, falsification conditions, proposed tests and the assessment note. Screenshot upload is optional and only sends a file you pick (PNG/JPEG/WEBP ≤ 5 MB). |
 | Studio | `/strategies/compile`, `/dry-run`, `POST /strategies`, `/approve`, `/deactivate`, `GET /strategies` | Compile prompts to a previewed rule, dry-run on the current symbol, save a draft, then approve with a second click that shows the exact `rule_hash`. |
+| Accounts | `/accounts/*`, `/trading/*` | Connections (live read-only or testnet), portfolio, positions, orders, performance. On testnet connections with Trading Mode on: preview, then place after an explicit confirmation within 60 s; check status and cancel. Live connections show a read-only note and no order ticket. Details in [ACCOUNTS_TRADING.md](ACCOUNTS_TRADING.md). |
+| Accounts (order journal, performance) | `/trading/orders`, `/trading/orders/{id}/reconcile`, `/cancel`, `/resolve`; `/accounts/connections/{id}/performance` | Each journal order shows the last check's result (a not-listed order says "Exchange did not list this order at the last check — do not place it again"), last checked and last seen times. Cancel order (confirmed) is offered for every order that is not final, including UNKNOWN, NOT_FOUND and acknowledged-but-not-listed ones. "Mark resolved…" appears only for orders the exchange never acknowledged (SENDING, UNKNOWN, NOT_FOUND), behind a confirmation that you have checked the exchange's order history; it only stops tracking and sends nothing to the exchange. Performance offers the markets the connection's exchange lists (including stock), and account symbols follow the engine's account rule (e.g. `BRK.B`). |
 | Alerts | `GET /alerts?after_seq=N` | The service worker polls once a minute (and every 30 s while the Alerts tab is open). Newest first; quiet-hours alerts are de-emphasised. Optional desktop notifications (off by default, plain text only; the first poll only sets a baseline). |
+| Reports | `POST /reports`, `GET /reports`, `GET /reports/{id}?format=markdown` | Save the current analysis as a frozen report, list saved reports, and download one as Markdown. |
 | Usage | `GET /usage` | Monthly tokens and estimated cost vs budgets, per feature/model rows, and the estimate note. |
 | Methods | `GET /methodologies`, `PUT /settings` | All 20 profiles with maturity and evidence level. Enable or disable any of them (including all) and choose NATIVE/HYBRID/ADAPTED. |
-| Settings | `GET`/`PUT /settings` | Token, connection test, watchlist, default analysis timeframe, quiet hours (UTC), pause alerts, AI data consent, deep-analysis opt-in, monthly token/USD budgets. Saves send the full settings object back. |
+| Settings | `GET`/`PUT /settings` | Token, connection test, watchlist, default analysis timeframe, quiet hours (UTC), pause alerts, AI data consent, deep-analysis opt-in, monthly token/USD budgets. Saves send the full settings object back with `If-Match` (the version the form was loaded from); if the settings changed elsewhere (another panel, window or the desktop app), the engine answers 412, nothing is saved, and the form reloads the newer settings and says so. |
 
 Errors are explicit: 401 → paste the token; 421 or connection refused → "local engine not
 running: run `my-ai-trading serve`"; 429/503 → retry-after; 422 → the validation detail.
@@ -74,7 +79,10 @@ references anything but those local font files.
 ## What it does NOT do
 
 - It does not scrape the page DOM, canvas or chart data, and does not capture screenshots itself.
-- It does not place, modify or cancel orders, and does not use exchange accounts or API keys.
+- It does not trade on live exchange accounts: live connections are read-only. It never places an
+  order on its own; a testnet order is sent only after you confirm that exact order.
+- It does not store exchange API keys. A key is sent once to the local engine, which keeps it in memory
+  or the OS vault for the lifetime you choose.
 - It does not talk to any host other than the local engine.
 - It does not render API, model or user text as HTML. Everything goes in with `textContent`/DOM
   APIs, and model output is treated as untrusted text.
@@ -84,9 +92,9 @@ references anything but those local font files.
 
 - Only USD-M perpetual and spot URLs are recognized; coin-margined, margin and other pages fall
   back to manual entry.
-- The API returns the newest ≤ 100 alerts after `after_seq`, newest first. If more than 100 alerts
-  arrive between two polls, the older ones in that gap are skipped by the client.
+- Each poll asks for at most 100 alerts after the last one seen; the API returns them oldest first. If more
+  than 100 arrive between two polls, the rest come on the next polls, so none are skipped, only delayed.
 - Approving a draft from the strategy list shows its `rule_hash`, trigger and description, but not
-  the full server preview (the list endpoint returns the raw rule only).
+  the full preview that the list endpoint also returns.
 - Strategy revision (`PUT /strategies/{id}`) and monitor status (`GET /monitor/status`) are not
   surfaced in the UI yet.

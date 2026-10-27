@@ -138,13 +138,34 @@ def _public(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in snapshot.items() if not k.startswith("_")}
 
 
+MAX_INFLIGHT_LLM_CALLS = 4  # concurrent provider calls per Copilot; more fail fast instead of queueing
+
+
+class CopilotBusyError(RuntimeError):
+    """Too many AI provider calls are already in flight. Retry later (the API maps it to HTTP 429).
+    Deterministic answers and cache hits never raise it; only a request that would start a new call does."""
+
+
 class Copilot:
-    def __init__(self, store: Store, provider: LLMProvider | None, *, user: str = LOCAL_USER):
+    def __init__(self, store: Store, provider: LLMProvider | None, *, user: str = LOCAL_USER,
+                 max_inflight: int = MAX_INFLIGHT_LLM_CALLS):
         self.store, self.provider, self.user = store, provider, user
-        self._budget_lock = threading.Lock()  # budget check + call + ledger write are one unit
+        # Guards gate + reservation + ledger writes. It is NEVER held across a provider call (PERF-2): each
+        # call reserves its worst-case tokens/USD under the lock, so concurrent calls cannot jointly overspend,
+        # then reconciles actual usage and releases the reservation under the lock when it returns.
+        self._budget_lock = threading.Lock()
+        self._reserved_tokens = 0
+        self._reserved_usd = 0.0
+        self._inflight = threading.BoundedSemaphore(max_inflight)
+
+    def reserved(self) -> dict[str, Any]:
+        """Budget held by in-flight calls (counted against the monthly budgets until they return)."""
+        with self._budget_lock:
+            return {"tokens": self._reserved_tokens, "usd": round(self._reserved_usd, 6)}
 
     # ---- gates ----
     def _gate(self, *, deep: bool, est_input_tokens: int, max_tokens: int) -> str | None:
+        """Caller holds ``_budget_lock``; in-flight reservations count as spent."""
         s = self.store.settings(self.user)
         if self.provider is None:
             return "No AI provider configured (deterministic analysis only)."
@@ -153,51 +174,81 @@ class Copilot:
         if deep and not s.deep_analysis_opt_in:
             return "Deep analysis requires opting in (it costs more)."
         usage = self.store.usage_summary(self.user)
-        if usage["total_tokens"] + est_input_tokens + max_tokens > s.monthly_ai_token_budget:
+        if usage["total_tokens"] + self._reserved_tokens + est_input_tokens + max_tokens > s.monthly_ai_token_budget:
             return "Monthly AI token budget would be exceeded; showing deterministic analysis instead."
         if s.monthly_ai_budget_usd > 0:
             est = estimate_cost(getattr(self.provider, "model", ""), est_input_tokens, max_tokens)
-            if est is not None and usage["total_cost_usd"] + est > s.monthly_ai_budget_usd:
+            if est is not None and usage["total_cost_usd"] + self._reserved_usd + est > s.monthly_ai_budget_usd:
                 return "Monthly AI dollar budget would be exceeded; showing deterministic analysis instead."
         return None
 
     def _call(self, feature: str, content: list[dict[str, Any]], *, deep: bool,
               cache_basis: dict[str, Any] | None = None) -> tuple[LLMResult | None, str | None]:
         max_tokens = 16_000 if deep else 4_000
-        est_in = sum(len(c.get("text", "")) for c in content) // 3 + (1_600 if any(c["type"] == "image" for c in content) else 0)
-        with self._budget_lock:  # serialize so concurrent requests cannot jointly overspend
-            return self._call_locked(feature, content, deep=deep, est_in=est_in, max_tokens=max_tokens,
-                                     cache_basis=cache_basis)
-
-    def _call_locked(self, feature: str, content: list[dict[str, Any]], *, deep: bool, est_in: int,
-                     max_tokens: int, cache_basis: dict[str, Any] | None) -> tuple[LLMResult | None, str | None]:
-        reason = self._gate(deep=deep, est_input_tokens=est_in, max_tokens=max_tokens)
-        consented = self.provider is not None and self.store.settings(self.user).llm_data_consent
+        # An upper bound, so reservations cover real usage: output is capped by max_tokens, and input is at most
+        # about one token per two UTF-8 bytes (CJK text is ~1 token per 3-byte character), system prompt included.
+        text_bytes = len(SYSTEM_PROMPT.encode()) + sum(len(c.get("text", "").encode()) for c in content)
+        est_in = text_bytes // 2 + (1_600 if any(c["type"] == "image" for c in content) else 0)
         model = getattr(self.provider, "model", getattr(self.provider, "name", ""))
-        key = None
-        if cache_basis is not None and consented:
-            key = hashlib.sha256(json.dumps([self.user, feature, model, deep, cache_basis], sort_keys=True,
-                                            default=str).encode()).hexdigest()
-            hit = self.store.cache_get(key, self.user)
-            if hit is not None and not (deep and not self.store.settings(self.user).deep_analysis_opt_in):
-                self.store.record_ai_usage(user=self.user, feature=feature, provider=self.provider.name,
-                                           model=hit["model"], input_tokens=0, output_tokens=0, cost_usd=0.0,
-                                           latency_ms=0, status="cache_hit")
-                return LLMResult(hit["text"], hit["model"], 0, 0, "cache_hit", 0), None
-        if reason:
-            return None, reason
+        with self._budget_lock:  # short critical section: gate, cache, reservation; no network I/O
+            reason = self._gate(deep=deep, est_input_tokens=est_in, max_tokens=max_tokens)
+            consented = self.provider is not None and self.store.settings(self.user).llm_data_consent
+            key = None
+            if cache_basis is not None and consented:
+                key = hashlib.sha256(json.dumps([self.user, feature, model, deep, cache_basis], sort_keys=True,
+                                                default=str).encode()).hexdigest()
+                hit = self.store.cache_get(key, self.user)
+                if hit is not None and not (deep and not self.store.settings(self.user).deep_analysis_opt_in):
+                    self.store.record_ai_usage(user=self.user, feature=feature, provider=self.provider.name,
+                                               model=hit["model"], input_tokens=0, output_tokens=0, cost_usd=0.0,
+                                               latency_ms=0, status="cache_hit")
+                    return LLMResult(hit["text"], hit["model"], 0, 0, "cache_hit", 0), None
+            if reason:
+                return None, reason
+            assert self.provider is not None
+            if not self._inflight.acquire(blocking=False):
+                raise CopilotBusyError("too many AI requests in flight; retry shortly")
+            res_tokens = est_in + max_tokens
+            res_usd = estimate_cost(getattr(self.provider, "model", ""), est_in, max_tokens) or 0.0
+            self._reserved_tokens += res_tokens
+            self._reserved_usd += res_usd
+        try:
+            return self._complete(feature, content, deep=deep, max_tokens=max_tokens, model=model, key=key,
+                                  reservation=(res_tokens, res_usd))
+        finally:
+            self._inflight.release()
+
+    def _complete(self, feature: str, content: list[dict[str, Any]], *, deep: bool, max_tokens: int, model: str,
+                  key: str | None, reservation: tuple[int, float]) -> tuple[LLMResult | None, str | None]:
+        """Provider call WITHOUT the budget lock, then reconcile: record actual usage and release the
+        reservation in one critical section, so a budget check never sees both or neither."""
         assert self.provider is not None
+        res: LLMResult | None = None
+        error: str | None = None
         try:
             res = self.provider.complete(system=SYSTEM_PROMPT, content=content, effort="high" if deep else "low",
                                          max_tokens=max_tokens)
         except Exception as exc:  # ProviderUnavailable or anything unexpected: record, then fall back
-            self.store.record_ai_usage(user=self.user, feature=feature, provider=self.provider.name, model=model,
-                                       input_tokens=0, output_tokens=0, cost_usd=None, latency_ms=0, status="error")
-            return None, str(exc) if isinstance(exc, ProviderUnavailable) else "AI provider error"
-        self.store.record_ai_usage(user=self.user, feature=feature, provider=self.provider.name, model=res.model,
-                                   input_tokens=res.input_tokens, output_tokens=res.output_tokens,
-                                   cost_usd=estimate_cost(res.model, res.input_tokens, res.output_tokens),
-                                   latency_ms=res.latency_ms, status=res.stop_reason or "ok")
+            error = str(exc) if isinstance(exc, ProviderUnavailable) else "AI provider error"
+        with self._budget_lock:
+            try:
+                if res is None:
+                    self.store.record_ai_usage(user=self.user, feature=feature, provider=self.provider.name,
+                                               model=model, input_tokens=0, output_tokens=0, cost_usd=None,
+                                               latency_ms=0, status="error")
+                else:
+                    self.store.record_ai_usage(user=self.user, feature=feature, provider=self.provider.name,
+                                               model=res.model, input_tokens=res.input_tokens,
+                                               output_tokens=res.output_tokens,
+                                               cost_usd=estimate_cost(res.model, res.input_tokens, res.output_tokens),
+                                               latency_ms=res.latency_ms, status=res.stop_reason or "ok")
+            finally:  # refund the unused part of the reservation even if the ledger write failed
+                self._reserved_tokens -= reservation[0]
+                self._reserved_usd = max(0.0, self._reserved_usd - reservation[1])
+                if self._reserved_tokens == 0:
+                    self._reserved_usd = 0.0  # no call in flight: drop float residue
+        if res is None:
+            return None, error
         if res.stop_reason == "refusal":
             return None, "The model declined this request; deterministic analysis shown instead."
         if key is not None:

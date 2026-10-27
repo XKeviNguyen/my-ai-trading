@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import formatting as F
-from ..client import TIMEFRAMES, UnauthorizedError, is_valid_token
+from ..client import TIMEFRAMES, PreconditionFailedError, UnauthorizedError, is_valid_token
 from ..context import AppContext
 from ..widgets import ResultArea, buddy_label, card, clear_layout, explained_check, plain_label, scroll_page, status_label
 
@@ -20,6 +20,7 @@ class SettingsView(QWidget):
         super().__init__()
         self.ctx = ctx
         self.wl_rows: list[tuple[QWidget, QLineEdit, QComboBox]] = []
+        self.form_etag: str | None = None  # tag of the settings the form shows; saves send it as If-Match
         inner = QWidget()
         lay = QVBoxLayout(inner)
         lay.addWidget(self._connection())
@@ -102,7 +103,7 @@ class SettingsView(QWidget):
         self.prefs.set(status_label("loading", "Loading settings…"))
 
         def ok(s: dict[str, Any]) -> None:
-            self.ctx.settings_cache = s
+            self.form_etag = self.ctx.settings_etag
             self.render_prefs(s)
 
         def err(e: Exception) -> None:
@@ -110,9 +111,9 @@ class SettingsView(QWidget):
                 self.prefs.set(status_label("info", "Load a valid token to see your settings."))
             else:
                 self.prefs.set(self.ctx.error_widget(e))
-        self.ctx.run(self.ctx.client.get_settings, ok, err)
+        self.ctx.load_settings_async(ok, err)
 
-    def render_prefs(self, s: dict[str, Any]) -> None:
+    def render_prefs(self, s: dict[str, Any], notice: QWidget | None = None) -> None:
         w = QWidget()
         w.setObjectName("prefs-form")
         lay = QVBoxLayout(w)
@@ -193,6 +194,8 @@ class SettingsView(QWidget):
         self.save_out = ResultArea("settings-out")
         lay.addWidget(self.save_out)
         self.prefs.set(w)
+        if notice is not None:
+            self.save_out.set(notice)
 
     def add_watch_row(self, symbol: str, market: str) -> None:
         row = QWidget()
@@ -242,10 +245,15 @@ class SettingsView(QWidget):
         self.save_out.set(status_label("loading", "Saving…"))
 
         def ok(_s: dict[str, Any]) -> None:
+            self.form_etag = self.ctx.settings_etag
             self.save_btn.setEnabled(True)
             self.save_out.set(status_label("ok", "Settings saved."))
 
         def err(e: Exception) -> None:
+            if isinstance(e, PreconditionFailedError) and getattr(e, "latest", None) is not None:
+                # Show the newer settings instead of the stale form; the user reviews and saves again.
+                self.form_etag = self.ctx.settings_etag
+                return self.render_prefs(self.ctx.settings_cache or {}, self.ctx.error_widget(e))
             self.save_btn.setEnabled(True)
             self.save_out.set(self.ctx.error_widget(e))
-        self.ctx.update_settings_async(lambda cur: cur.update(values), ok, err)
+        self.ctx.update_settings_async(lambda cur: cur.update(values), ok, err, base_etag=self.form_etag)

@@ -21,7 +21,7 @@ from .market import CLOSE_SAFETY_MS, MarketDataService
 from .methodology import BY_ID, assess
 from .patterns import recent_patterns
 from .providers.binance import MarketDataError, RateLimitedError
-from .rules import evaluate
+from .rules import StrategyRule, evaluate
 from .store import LOCAL_USER, Store
 from .strategies import EVALUATORS
 
@@ -32,6 +32,7 @@ PRIORITY = {"PATTERN_CONFIRMED": 1, "BREAKOUT": 2, "BREAKDOWN": 2, "FAILED_BREAK
             "METHODOLOGY_STATE": 2, "STALE_DATA": 1}
 MAX_BACKOFF_MS = 15 * 60_000
 UNRESOLVED_RETRY_MS = 10 * 60_000
+MAX_TICK_BACKOFF_S = 60.0  # a failing tick (e.g. first clock sync) retries with backoff up to this (PERF-6)
 
 
 def event_id(*parts: Any) -> str:
@@ -59,6 +60,8 @@ class Monitor:
     unresolved: dict[str, tuple[int, str]] = field(default_factory=dict)  # watch key -> (retry_at_ms, error)
     on_subscriptions: Callable[[set[tuple[str, str, str]]], None] | None = None  # e.g. KlineStreams.set_subscriptions
     _wake: asyncio.Event = field(default_factory=asyncio.Event)
+    _stop: asyncio.Event | None = None  # set by run_forever so tick() can stop between subscriptions
+    tick_failures: int = 0
 
     def wake(self, symbol: str, market: str, timeframe: str, bar_open_ms: int) -> None:
         """A stream saw this bar close: make the subscription due now. Data still comes from REST in tick()."""
@@ -67,12 +70,13 @@ class Monitor:
                 st.next_due_ms = 0  # never cut short a backoff (e.g. after HTTP 429: an early retry risks an IP ban)
                 self._wake.set()
 
-    def subscriptions(self, now_ms: int | None = None) -> list[tuple[InstrumentIdentity, str]]:
+    def subscriptions(self, now_ms: int | None = None, *, settings=None,
+                      rules: list[tuple[str, int, StrategyRule]] | None = None) -> list[tuple[InstrumentIdentity, str]]:
         """Watchlist x needed timeframes. A symbol that fails to resolve is skipped (with backoff),
-        never allowed to stop monitoring of the others."""
-        s = self.store.settings(self.user)
+        never allowed to stop monitoring of the others. ``settings`` / ``rules`` reuse a tick's snapshot."""
+        s = self.store.settings(self.user) if settings is None else settings
         tfs = set(s.timeframes)
-        for _, _, rule in self.store.active_rules(self.user):
+        for _, _, rule in (self.store.active_rules(self.user) if rules is None else rules):
             tfs.update(rule.timeframes())
         for sel in s.selected_methodologies:
             p = BY_ID[sel.methodology_id]
@@ -96,17 +100,33 @@ class Monitor:
             subs.extend((self.instruments[key], tf) for tf in ordered)
         return subs
 
+    def tick_backoff_s(self, idle_s: float) -> float:
+        """Delay after ``tick_failures`` consecutive failed ticks: exponential from ``idle_s``, jitter applied
+        BEFORE the cap so the delay never exceeds MAX_TICK_BACKOFF_S."""
+        base = idle_s * 2 ** min(self.tick_failures, 16)
+        return min(MAX_TICK_BACKOFF_S, base * (0.5 + self.rng.random()))
+
     async def run_forever(self, *, stop: asyncio.Event | None = None, idle_s: float = 1.0) -> None:
         stop = stop or asyncio.Event()
+        self._stop = stop
         while not stop.is_set():
             try:
                 await self.tick()
+                self.tick_failures = 0
             except Exception:  # never let one bad cycle kill the monitor
-                log.exception("monitor tick failed")
-            stopper = asyncio.ensure_future(stop.wait())
-            waker = asyncio.ensure_future(self._wake.wait())
-            await asyncio.wait({stopper, waker}, timeout=idle_s, return_when=asyncio.FIRST_COMPLETED)
-            for t in (stopper, waker):
+                self.tick_failures += 1
+                if self.tick_failures == 1:
+                    log.exception("monitor tick failed")
+                else:  # backed off, so this logs at most about once per MAX_TICK_BACKOFF_S
+                    log.warning("monitor tick failed again (%d in a row)", self.tick_failures, exc_info=True)
+            waits = {asyncio.ensure_future(stop.wait())}
+            if self.tick_failures:  # back off: a stream wake-up must not turn this into a tight retry loop
+                timeout = self.tick_backoff_s(idle_s)
+            else:
+                timeout = idle_s
+                waits.add(asyncio.ensure_future(self._wake.wait()))
+            await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            for t in waits:
                 t.cancel()
             self._wake.clear()
 
@@ -119,17 +139,22 @@ class Monitor:
             base = min(MAX_BACKOFF_MS, 5_000 * 2 ** min(st.failures, 10))
             st.next_due_ms = now + int(base * (0.5 + self.rng.random()))  # bounded backoff with jitter
 
-    async def tick(self) -> list[dict[str, Any]]:
-        """Process every subscription that is due. Returns newly recorded alerts."""
+    async def tick(self, *, stop: asyncio.Event | None = None) -> list[dict[str, Any]]:
+        """Process every subscription that is due. Returns newly recorded alerts. Settings and active
+        rules are read once per tick (PERF-4); a stop request is honored between subscriptions (FLOW-11)."""
+        stop = stop or self._stop
         settings = self.store.settings(self.user)
         if settings.alerts_paused:
             return []
         now = await asyncio.to_thread(self.service.clock.now_ms)
-        subs = await asyncio.to_thread(self.subscriptions, now)
+        rules = await asyncio.to_thread(self.store.active_rules, self.user)
+        subs = await asyncio.to_thread(self.subscriptions, now, settings=settings, rules=rules)
         if self.on_subscriptions:
             self.on_subscriptions({(i.symbol, str(i.market_type), tf) for i, tf in subs})
         new: list[dict[str, Any]] = []
         for inst, tf in subs:
+            if stop is not None and stop.is_set():
+                break  # remaining subscriptions stay due and run on the next start
             st = self.state.setdefault((inst.key, tf), SubState())
             if now < st.next_due_ms:
                 continue
@@ -141,7 +166,7 @@ class Monitor:
             except MarketDataError as exc:
                 self._backoff(st, now, str(exc))
                 continue
-            alerts, complete, stale = await asyncio.to_thread(self._process, inst, tf, series, now, settings)
+            alerts, complete, stale = await asyncio.to_thread(self._process, inst, tf, series, now, settings, rules)
             if stale:
                 self._backoff(st, now, "STALE_DATA: no new closed bar when one was expected")
             elif not complete:
@@ -159,8 +184,8 @@ class Monitor:
             new.extend(alerts)
         return new
 
-    def _process(self, inst: InstrumentIdentity, tf: str, series: CandleSeries, now: int,
-                 settings) -> tuple[list[dict[str, Any]], bool, bool]:
+    def _process(self, inst: InstrumentIdentity, tf: str, series: CandleSeries, now: int, settings,
+                 rules: list[tuple[str, int, StrategyRule]] | None = None) -> tuple[list[dict[str, Any]], bool, bool]:
         """Evaluate one newly closed bar. Returns (alerts, complete, stale). The bar is marked as
         processed only when every engine/strategy/methodology check for it ran; otherwise it is retried
         (alert ids are idempotent, so a retry cannot duplicate anything already recorded)."""
@@ -195,7 +220,7 @@ class Monitor:
                 cache[code] = self.service.series(inst, code, now_ms=now)
             return cache[code]
 
-        for sid, version, rule in self.store.active_rules(self.user):
+        for sid, version, rule in (self.store.active_rules(self.user) if rules is None else rules):
             if rule.trigger_timeframe != tf:
                 continue
             try:
@@ -203,10 +228,12 @@ class Monitor:
             except (MarketDataError, ValueError) as exc:
                 errors.append(f"strategy {sid}: {exc}")
                 continue
+            if res["result"] != "MATCH":
+                continue
             key = f"{self.user}|{inst.key}|{sid}"
-            prev_bar = self.store.cooldown_last(key)
+            prev_bar = self.store.cooldown_last(key)  # read only for a match (PERF-4)
             cool = prev_bar is None or Timeframe(tf).bars_between(prev_bar, last.open_time_ms) >= rule.cooldown_bars
-            if res["result"] == "MATCH" and cool:
+            if cool:
                 created = self._alert(inst, tf, f"strategy:{sid}:v{version}", "STRATEGY_MATCH", last.open_time_ms,
                                       quiet, {"strategy_id": sid, "version": version, "name": rule.name,
                                               "evaluation": res, "label": "Custom strategy"})

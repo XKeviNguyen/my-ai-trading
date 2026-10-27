@@ -255,7 +255,39 @@ def test_trading_mode_is_switched_off_at_every_start():
     store, vault, clock = Store(), MemoryVault(), Clock()
     cs, _, _ = make(store, vault, clock)
     meta = save(cs, Lifetime.DAYS_7)
-    cs.update_meta(meta.model_copy(update={"trading_enabled": True}))
+    cs.update_meta(meta.connection_id, user="local", mutate=lambda m: m.model_copy(update={"trading_enabled": True}))
     restart, _, _ = make(store, vault, clock)
     restart.purge_on_start()
     assert restart.list(user="local")[0].trading_enabled is False
+
+
+def test_any_vault_backend_failure_becomes_vault_unavailable_and_start_still_works(monkeypatch):
+    keyring = pytest.importorskip("keyring")
+    ok = type("Keyring", (), {"priority": 5})
+    ok.__module__ = "keyring.backends.SecretService"
+    monkeypatch.setattr(keyring, "get_keyring", lambda: ok())
+
+    def dbus_down(*a):
+        raise RuntimeError("org.freedesktop.DBus.Error.ServiceUnknown")
+    monkeypatch.setattr(keyring, "delete_password", dbus_down)
+    monkeypatch.setattr(keyring, "get_password", dbus_down)
+    with pytest.raises(VaultUnavailable, match="RuntimeError"):  # SEC-4 / ENV-5: was an unhandled RuntimeError
+        C.KeyringVault().get("x")
+    store, clock = Store(), Clock()
+    first_run = CredentialStore(store, persistent_vault=MemoryVault, clock=clock)
+    meta = first_run.save(user="local", exchange="binance", environment=Environment.TESTNET, label="x",
+                          lifetime=Lifetime.HOUR_1, credential=cred(), permissions=KeyPermissions())
+    clock.t += 7_200  # expired; the next start must delete it from the vault, which is down
+    restart = CredentialStore(store, clock=clock)  # the real KeyringVault, now failing with RuntimeError
+    assert restart.purge_on_start() == 0  # starts instead of crashing
+    assert store.connection(meta.connection_id, "local").purge_pending  # retried on a later start
+
+
+def test_get_keyring_failure_is_vault_unavailable(monkeypatch):
+    keyring = pytest.importorskip("keyring")
+
+    def broken():
+        raise RuntimeError("no D-Bus session")
+    monkeypatch.setattr(keyring, "get_keyring", broken)
+    with pytest.raises(VaultUnavailable):
+        C.KeyringVault()

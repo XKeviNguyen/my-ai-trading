@@ -7,6 +7,8 @@ Trading Mode, confirmation and the testnet-only rule.
 """
 from __future__ import annotations
 
+from http.client import HTTPException
+
 import json
 import time
 from dataclasses import dataclass, field
@@ -86,8 +88,15 @@ def urllib_transport(method: str, url: str, headers: dict[str, str], body: bytes
                 raise ExchangeUnavailable("exchange response too large")
             return HttpResponse(resp.status, data, {k.lower(): v for k, v in resp.headers.items()})
     except HTTPError as exc:
-        return HttpResponse(exc.code, exc.read(65_536) if exc.fp else b"",
-                            {k.lower(): v for k, v in (exc.headers or {}).items()})
+        try:
+            error_body = exc.read(65_536) if exc.fp else b""
+        except (HTTPException, OSError):  # a malformed error body still carries the status code
+            error_body = b""
+        finally:
+            exc.close()
+        return HttpResponse(exc.code, error_body, {k.lower(): v for k, v in (exc.headers or {}).items()})
+    except HTTPException as exc:  # garbage reply after the request went out (ENV-12): never "not sent"
+        raise OutcomeUnknown("malformed reply after sending; the request may or may not have taken effect") from exc
     except TimeoutError as exc:
         raise OutcomeUnknown("exchange did not answer in time; the request may or may not have taken effect") from exc
     except (URLError, OSError) as exc:
@@ -190,7 +199,8 @@ class ExchangeAdapter:
     def query_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str) -> Order | None:
         raise NotSupported(f"{self.INFO.name}: order lookup is not implemented")
 
-    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str) -> Order:
+    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str,
+                     exchange_order_id: str | None = None) -> Order:
         raise NotSupported(f"{self.INFO.name}: order cancellation is not implemented")
 
     # ---- shared helpers ----

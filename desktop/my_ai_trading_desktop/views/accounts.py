@@ -9,6 +9,7 @@ Same features and wording as the extension's Accounts view (extension/src/views/
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -532,14 +533,31 @@ class AccountsView(QWidget):
         return out
 
     def _journal_row(self, j: dict[str, Any], stuck: bool) -> QWidget:
-        coid, state = F.text(j.get("client_order_id"), ""), F.text(j.get("state"), "")
-        summary = F.journal_summary(j)
-        box, lay = card(f"{summary} · {state}" + (" · needs a status check" if stuck else ""))
+        row = dict(j)
+        coid = F.text(row.get("client_order_id"), "")
+        summary = F.journal_summary(row)
+        box, lay = card("")
         box.setObjectName("journal-row")
-        if j.get("message"):
-            lay.addWidget(plain_label(F.text(j.get("message")), muted=True))
+        details = ResultArea("journal-details")
+        lay.addWidget(details)
         msg = ResultArea("journal-msg")
         client = self.ctx.client
+        check = QPushButton("Check status")
+        check.setAccessibleName(f"Check status of {summary}")
+        cancel = QPushButton("Cancel order")
+        cancel.setAccessibleName(f"Cancel {summary}")
+        resolve = QPushButton("Mark resolved…")
+        resolve.setAccessibleName(f"Mark {summary} resolved")
+
+        def paint() -> None:
+            state = F.text(row.get("state"), "")
+            box.set_title(f"{summary} · {state}" + (" · needs a status check" if stuck and state not in F.FINAL_STATES
+                                                     else ""))
+            lines = [plain_label(F.text(row.get("message")), muted=True)] if row.get("message") else []
+            lines += [plain_label(line, name="journal-verification") for line in F.journal_verification_lines(row)]
+            details.set(*lines)
+            cancel.setVisible(F.journal_can_cancel(row))
+            resolve.setVisible(F.journal_can_resolve(row))
 
         def act(fn: Callable[[], dict[str, Any]]) -> None:
             msg.set(status_label("loading", "Asking the exchange…"))
@@ -547,23 +565,34 @@ class AccountsView(QWidget):
             def ok(r: dict[str, Any]) -> None:
                 st = F.text(r.get("state"), "")
                 note = F.text(r.get("note"), "")
-                msg.set(status_label("info" if st == "UNKNOWN" else "ok", st + (f" — {note}" if note else "")))
+                verification = r.get("verification")
+                row["state"] = st
+                if "verification" in r:
+                    row["verification"] = verification
+                    row["last_checked_at"] = int(time.time() * 1000)
+                    if verification == "confirmed":
+                        row["acknowledged"], row["last_seen_at"] = 1, row["last_checked_at"]
+                if "misses" in r:
+                    row["lookups"] = r.get("misses")
+                uncertain = verification in ("not_listed", "lookup_failed") or st == "UNKNOWN"
+                msg.set(status_label("info" if uncertain else "ok", st + (f" — {note}" if note else "")))
+                paint()
             self.ctx.run(fn, ok, lambda e: msg.set(self.ctx.error_widget(e)))
-        check = QPushButton("Check status")
-        check.setAccessibleName(f"Check status of {summary}")
-        check.clicked.connect(lambda: act(lambda: client.reconcile(coid)))
-        buttons = [check]
-        if state in ("NEW", "PARTIALLY_FILLED"):
-            cancel = QPushButton("Cancel order")
-            cancel.setAccessibleName(f"Cancel {summary}")
 
-            def do_cancel() -> None:
-                if self.ctx.confirm(self, "Cancel testnet order", "Cancel this testnet order?", summary,
-                                    "Yes, cancel the order"):
-                    act(lambda: client.cancel_order(coid))
-            cancel.clicked.connect(do_cancel)
-            buttons.append(cancel)
-        lay.addWidget(_row(*buttons))
+        def do_cancel() -> None:
+            if self.ctx.confirm(self, "Cancel testnet order", F.CANCEL_CONFIRM_TEXT,
+                                f"{summary}\n\n{F.CANCEL_CONFIRM_DETAIL}", "Yes, cancel the order"):
+                act(lambda: client.cancel_order(coid))
+
+        def do_resolve() -> None:
+            if self.ctx.confirm(self, "Mark order resolved", F.RESOLVE_CONFIRM_TEXT,
+                                f"{summary}\n\n{F.RESOLVE_CONFIRM_DETAIL}", "I checked the exchange; mark resolved"):
+                act(lambda: client.resolve_order(coid))
+        check.clicked.connect(lambda: act(lambda: client.reconcile(coid)))
+        cancel.clicked.connect(do_cancel)
+        resolve.clicked.connect(do_resolve)
+        paint()
+        lay.addWidget(_row(check, cancel, resolve))
         lay.addWidget(msg)
         return box
 

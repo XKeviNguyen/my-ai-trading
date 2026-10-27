@@ -43,6 +43,8 @@ export class SettingsView implements View {
   private readonly root: HTMLElement;
   private readonly app: App;
   private readonly prefsBox: HTMLElement;
+  /** Version tag of the settings the form shows; a save sends it so stale form values never overwrite. */
+  private formEtag: string | null = null;
 
   constructor(root: HTMLElement, app: App) {
     this.root = root;
@@ -121,7 +123,9 @@ export class SettingsView implements View {
   async loadPrefs(): Promise<void> {
     setChildren(this.prefsBox, status("loading", "Loading settings…"));
     try {
-      this.renderPrefs(await this.app.settings(true));
+      const s = await this.app.settings(true);
+      this.formEtag = this.app.settingsEtag;
+      this.renderPrefs(s);
     } catch (err) {
       if (err instanceof ApiError && err.kind === "unauthorized") {
         setChildren(this.prefsBox, status("info", "Save a valid token to load your settings."));
@@ -129,7 +133,7 @@ export class SettingsView implements View {
     }
   }
 
-  private renderPrefs(s: UserSettings): void {
+  private renderPrefs(s: UserSettings, notice: HTMLElement | null = null): void {
     const atf = h("select", null, TIMEFRAMES.map((t) => h("option", { value: t }, t)));
     atf.value = s.analysis_timeframe;
 
@@ -153,7 +157,7 @@ export class SettingsView implements View {
     const deep = h("input", { type: "checkbox", checked: s.deep_analysis_opt_in });
     const tokBudget = numberInput(s.monthly_ai_token_budget, 0, 100_000_000);
     const usdBudget = numberInput(s.monthly_ai_budget_usd, 0, 10_000, "0.01");
-    const out = h("div", { "aria-live": "polite" });
+    const out = h("div", { "aria-live": "polite" }, notice);
     const save = h("button", { type: "submit", class: "primary" }, "Save settings");
 
     const form = h(
@@ -213,10 +217,16 @@ export class SettingsView implements View {
           cur.deep_analysis_opt_in = deep.checked;
           cur.monthly_ai_token_budget = tb;
           cur.monthly_ai_budget_usd = ub;
-        });
+        }, this.formEtag);
+        this.formEtag = this.app.settingsEtag;
         setChildren(out, status("ok", "Settings saved."));
         this.app.setAnalysisTf(atf.value);
       } catch (err) {
+        if (err instanceof ApiError && err.kind === "changed_elsewhere" && this.app.cachedSettings) {
+          // Show the newer settings instead of the stale form; the user reviews and saves again.
+          this.formEtag = this.app.settingsEtag;
+          return void this.renderPrefs(this.app.cachedSettings, this.app.errorView(err));
+        }
         setChildren(out, this.app.errorView(err));
       } finally {
         save.disabled = false;

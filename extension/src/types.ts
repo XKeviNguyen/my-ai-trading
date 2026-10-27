@@ -558,6 +558,9 @@ export interface TradeResult {
   state: string;
   order?: AccountOrder;
   note?: string;
+  /** Result of the exchange lookup (reconcile, or a cancel whose outcome was unknown). */
+  verification?: "confirmed" | "not_listed" | "lookup_failed" | null;
+  misses?: number;
 }
 
 export interface JournalRow {
@@ -569,6 +572,14 @@ export interface JournalRow {
   message: string | null;
   request_json: string;
   created_at: number;
+  /** 1 once the exchange has ever confirmed the order. */
+  acknowledged?: number | boolean;
+  exchange_order_id?: string | null;
+  verification?: "confirmed" | "not_listed" | "lookup_failed" | null;
+  last_checked_at?: number | null;
+  last_seen_at?: number | null;
+  /** Spaced "not listed" lookups since the exchange last confirmed the order. */
+  lookups?: number | null;
 }
 
 export interface JournalResponse {

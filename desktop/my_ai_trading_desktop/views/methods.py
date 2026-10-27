@@ -6,6 +6,7 @@ from typing import Any
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from .. import formatting as F
+from ..client import PreconditionFailedError
 from ..context import AppContext
 from ..widgets import ResultArea, bullet_list, buddy_label, card, collapsible, plain_label, scroll_page, status_label
 
@@ -16,6 +17,7 @@ class MethodsView(QWidget):
         self.ctx = ctx
         self.rows: dict[str, tuple[QCheckBox, QComboBox]] = {}
         self.profiles: list[dict[str, Any]] = []
+        self.form_etag: str | None = None
         outer = QVBoxLayout(self)
         bar = QHBoxLayout()
         self.save_btn = QPushButton("&Save selection")
@@ -24,7 +26,7 @@ class MethodsView(QWidget):
         none = QPushButton("Disable all")
         none.clicked.connect(self.disable_all)
         reload_btn = QPushButton("Reload")
-        reload_btn.clicked.connect(self.load)
+        reload_btn.clicked.connect(lambda: self.load())
         for b in (self.save_btn, none, reload_btn):
             bar.addWidget(b)
         bar.addStretch(1)
@@ -41,18 +43,19 @@ class MethodsView(QWidget):
     def show_tab(self) -> None:
         self.load()
 
-    def load(self) -> None:
+    def load(self, notice: QWidget | None = None) -> None:
         self.list_box.set(status_label("loading", "Loading methodologies…"))
-        self.msg.set()
+        self.msg.set(notice if isinstance(notice, QWidget) else None)
 
-        def job() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        def job() -> tuple[list[dict[str, Any]], tuple[dict[str, Any], str | None]]:
             profiles = self.ctx.profiles_cache or self.ctx.client.methodologies().get("profiles") or []
-            return profiles, self.ctx.client.get_settings()
+            return profiles, self.ctx.client.get_settings_versioned()
 
-        def ok(result: tuple[list[dict[str, Any]], dict[str, Any]]) -> None:
-            profiles, settings = result
+        def ok(result: tuple[list[dict[str, Any]], tuple[dict[str, Any], str | None]]) -> None:
+            profiles, (settings, etag) = result
             self.ctx.profiles_cache = profiles
-            self.ctx.settings_cache = settings
+            self.ctx.settings_cache, self.ctx.settings_etag = settings, etag
+            self.form_etag = etag  # the checkboxes show this version; a save sends it as If-Match
             self.render([p for p in profiles if isinstance(p, dict)], settings)
         self.ctx.run(job, ok, lambda e: self.list_box.set(self.ctx.error_widget(e)))
 
@@ -114,11 +117,14 @@ class MethodsView(QWidget):
             s["selected_methodologies"] = F.build_selections(s.get("selected_methodologies") or [], order, enabled)
 
         def ok(s: dict[str, Any]) -> None:
+            self.form_etag = self.ctx.settings_etag
             self.save_btn.setEnabled(True)
             n = len(s.get("selected_methodologies") or [])
             self.msg.set(status_label("ok", f"Saved: {n} methodolog{'y' if n == 1 else 'ies'} selected."))
 
         def err(e: Exception) -> None:
+            if isinstance(e, PreconditionFailedError):
+                return self.load(self.ctx.error_widget(e))  # show the newer selection; nothing was saved
             self.save_btn.setEnabled(True)
             self.msg.set(self.ctx.error_widget(e))
-        self.ctx.update_settings_async(mutate, ok, err)
+        self.ctx.update_settings_async(mutate, ok, err, base_etag=self.form_etag)

@@ -108,3 +108,25 @@ def test_stale_native_data_is_reported_not_evaluated():
                                 as_of_ms=cache["1w"].candles[-1].close_time_ms + 30 * 86_400_000)
     p = out["perspectives"][0]
     assert p["assessment"]["status"] == "STALE_DATA" and p["evaluation"]["state"] == "SKIPPED"
+
+
+def test_perspectives_never_evaluate_bars_after_as_of():
+    full = series_from_closes(uptrend_closes(120)[:100] + [x / 3 for x in uptrend_closes(120)[100:]], "1w")
+    as_of = full.candles[99].close_time_ms + 1
+    truncated = full.up_to(as_of)
+    later = evaluate_perspectives(SAND, "1h", [{"methodology_id": "weinstein"}], lambda tf: full, as_of_ms=as_of)
+    now = evaluate_perspectives(SAND, "1h", [{"methodology_id": "weinstein"}], lambda tf: truncated, as_of_ms=as_of)
+    assert later["perspectives"][0]["evaluation"] == now["perspectives"][0]["evaluation"]  # DATA-8
+
+
+def test_the_hybrid_tactical_layer_never_sees_bars_after_as_of():
+    hourly = uptrend_closes(300)
+    full = series_from_closes(hourly[:250] + [x / 4 for x in hourly[250:]], "1h")
+    weekly = series_from_closes(uptrend_closes(120), "1w")
+    as_of = full.candles[249].close_time_ms + 1
+    get = {"1h": full, "1w": weekly}.__getitem__
+    cut = {"1h": full.up_to(as_of), "1w": weekly}.__getitem__
+    sel = [{"methodology_id": "weinstein", "mode": "HYBRID"}]
+    later = evaluate_perspectives(SAND, "1h", sel, get, as_of_ms=as_of)["perspectives"][0]["tactical_layer"]
+    now = evaluate_perspectives(SAND, "1h", sel, cut, as_of_ms=as_of)["perspectives"][0]["tactical_layer"]
+    assert later == now  # re-audit DATA-8: the tactical trend read the later, falling bars

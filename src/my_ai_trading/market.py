@@ -19,7 +19,15 @@ CLOSE_SAFETY_MS = 1_500        # bar counts as closed only this long after its e
 CLOCK_RESYNC_S = 600
 CLOCK_RETRY_S = 60
 DEFAULT_BARS = 400
-MAX_CACHE_KEYS = 256
+# Sized to hold every subscription of the largest allowed watchlist (store.UserSettings: 50 symbols) on every
+# timeframe code a rule or methodology may need (PERF-5), plus headroom for ad-hoc snapshots. Still bounded:
+# at most MAX_CACHE_KEYS x 1500 candles. tests/test_perf_market.py keeps this in sync with the settings limits.
+MAX_WATCHLIST_SYMBOLS = 50
+MAX_CACHE_KEYS = MAX_WATCHLIST_SYMBOLS * len(Timeframe.all_codes()) + 64
+HISTORY_RECHECK_MS = 5 * 60_000  # a short full response is re-verified after this long (DATA-5)
+# A gap that survived a full fetch may itself come from a partial reply: re-check it after an hour or 24 bars.
+GAP_RECHECK_MS = 3_600_000
+GAP_RECHECK_BARS = 24
 DEFAULT_TIMEFRAMES = ("1h", "4h", "1d", "1w")
 
 
@@ -66,7 +74,11 @@ class MarketDataService:
         self._cache: OrderedDict[tuple[str, str], list[Candle]] = OrderedDict()
         self._instruments: dict[tuple[str, str], InstrumentIdentity] = {}
         self._key_locks: dict[tuple[str, str], threading.Lock] = {}
-        self._history_start: dict[tuple[str, str], bool] = {}
+        # key -> server time of a full fetch that returned fewer rows than asked (a new listing, or a partial
+        # response: re-verified after HISTORY_RECHECK_MS instead of trusted forever).
+        self._history_start: dict[tuple[str, str], int] = {}
+        # key -> gaps that survived a full refetch (real exchange gaps); not refetched again for them.
+        self._known_gaps: dict[tuple[str, str], tuple[frozenset[tuple[int, int]], int]] = {}  # gaps, when seen
         self._guard = threading.Lock()
         self.fetch_count = 0
 
@@ -96,33 +108,60 @@ class MarketDataService:
         now = self.clock.now_ms() if now_ms is None else now_ms
         with self._lock_for(key):  # single-flight per key: concurrent callers share one fetch
             cached = self._cache.get(key, [])
-            have_enough = len(cached) >= bars or self._history_start.get(key, False)
+            short = len(cached) < bars
+            start_seen = self._history_start.get(key)
+            history_known = start_seen is not None and now - start_seen < HISTORY_RECHECK_MS
             next_close_due = tf.next_bar_close_ms(cached[-1].close_time_ms) + 1 if cached else -1
-            if not cached or not have_enough or now > next_close_due + CLOSE_SAFETY_MS:
+            if not cached or (short and not history_known) or now > next_close_due + CLOSE_SAFETY_MS:
                 # +1: the newest row returned is usually the still-forming bar, which is dropped.
                 full = min(bars + 1, 1500)
                 needed = (now - cached[-1].close_time_ms) // tf.duration_ms + 3 if cached else full
                 if needed > full:  # idle longer than one fetch window: refetch rather than leave a hole
-                    cached, have_enough = [], False
-                limit = full if not have_enough else min(full, max(3, needed))
-                fresh = self.provider.klines(instrument, tf, limit=limit)
-                self.fetch_count += 1
-                if limit == full and len(fresh) < full:
-                    self._history_start[key] = True  # provider has no older bars (new listing)
-                merged = _merge(cached, [c for c in fresh if c.is_closed(now, safety_ms=CLOSE_SAFETY_MS)])
-                try:  # validate BEFORE caching so one malformed row cannot poison the key
-                    CandleSeries(instrument, tf, tuple(merged))
-                except ValueError as exc:
-                    with self._guard:
-                        self._cache.pop(key, None)
-                    raise MarketDataError(f"Provider returned inconsistent {tf} candles") from exc
+                    cached = []
+                # Short of the requested history: fetch the full window again rather than only new bars,
+                # so a partial response heals instead of staying degraded for hundreds of bars (DATA-5).
+                limit = full if short or not cached else min(full, max(3, needed))
+                merged = self._fetch_merge(instrument, tf, key, cached, limit, full, now)
+                gaps = set(CandleSeries(instrument, tf, tuple(merged[-full:])).gaps)
+                known, seen_at = self._known_gaps.get(key, (frozenset(), 0))
+                if now - seen_at >= max(GAP_RECHECK_MS, GAP_RECHECK_BARS * tf.duration_ms):
+                    known = frozenset()
+                if limit < full and gaps - known:
+                    # The incremental fetch left a new hole (fresh data starts after a gap): refetch the full
+                    # window once. Gaps that survive a full fetch are real exchange gaps and are remembered.
+                    merged = self._fetch_merge(instrument, tf, key, cached, full, full, now)
+                    limit = full
+                if limit == full:
+                    self._known_gaps[key] = (frozenset(CandleSeries(instrument, tf, tuple(merged[-full:])).gaps), now)
                 cached = merged
                 with self._guard:
                     self._cache[key] = cached[-1500:]
                     self._cache.move_to_end(key)
                     while len(self._cache) > MAX_CACHE_KEYS:
-                        self._cache.popitem(last=False)
+                        old, _ = self._cache.popitem(last=False)
+                        self._known_gaps.pop(old, None)
+                        self._history_start.pop(old, None)
         return CandleSeries.from_candles(instrument, tf, cached[-bars:], now_ms=now, safety_ms=CLOSE_SAFETY_MS)
+
+    def _fetch_merge(self, instrument: InstrumentIdentity, tf: Timeframe, key: tuple[str, str],
+                     cached: list[Candle], limit: int, full: int, now: int) -> list[Candle]:
+        """One provider call merged into ``cached``; validated BEFORE caching so one malformed row cannot
+        poison the key. Caller holds the key lock."""
+        fresh = self.provider.klines(instrument, tf, limit=limit)
+        self.fetch_count += 1
+        if limit == full:
+            if len(fresh) < full:
+                self._history_start[key] = now  # no older bars (new listing) or a partial response
+            else:
+                self._history_start.pop(key, None)
+        merged = _merge(cached, [c for c in fresh if c.is_closed(now, safety_ms=CLOSE_SAFETY_MS)])
+        try:
+            CandleSeries(instrument, tf, tuple(merged))
+        except ValueError as exc:
+            with self._guard:
+                self._cache.pop(key, None)
+            raise MarketDataError(f"Provider returned inconsistent {tf} candles") from exc
+        return merged
 
 
     def snapshot(self, instrument: InstrumentIdentity, timeframes: tuple[str, ...] = DEFAULT_TIMEFRAMES,

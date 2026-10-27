@@ -25,13 +25,12 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .adapters.base import ExchangeError, ExchangeUnavailable, OrderRequest, OutcomeUnknown, SymbolRules, plain
-from .credentials import ConnectionMeta
+from .credentials import ConnectionMeta, CredentialExpired, CredentialNotFound
 from .models import Environment, Order, OrderStatus, Position
 from .service import AccountService, PolicyRefused
 
 CONFIRM_TTL_S = 60.0
-NOT_FOUND_AFTER_LOOKUPS, NOT_FOUND_AFTER_MS = 3, 60_000  # exchanges can list a new order seconds late
-TERMINAL = frozenset({"FILLED", "CANCELED", "REJECTED", "EXPIRED"})
+MISS_SPACING_MS = 20_000  # a "not listed" lookup counts as a new miss only this long after the previous one
 MAX_PENDING_PREVIEWS = 50
 CONSENT_TEXT = ("I understand Trading Mode sends real orders to this connection's TESTNET/demo account after I confirm "
                 "each one, that the app never trades on its own, and that testnet results do not predict live results.")
@@ -80,6 +79,7 @@ class Preview:
     warnings: list[str]
     expires_at: float
     token_digest: bytes = field(repr=False, default=b"")
+    mode_gen: int = 0  # Trading Mode generation at creation; any mode change invalidates the preview
 
     def public(self) -> dict[str, Any]:
         req = asdict(self.request)
@@ -135,28 +135,28 @@ class TradingService:
                  wall_ms: Callable[[], int] = lambda: int(time.time() * 1000)):
         self.accounts, self.journal, self._clock, self._wall_ms = accounts, journal, clock, wall_ms
         self._previews: dict[str, Preview] = {}
+        self._mode_gen: dict[str, int] = {}  # connection id -> bumped on every Trading Mode change
+        self._sending: set[str] = set()  # client order IDs whose send has not returned yet
         self._lock = threading.Lock()
 
     # ---- Trading Mode ----
     def set_mode(self, connection_id: str, *, user: str, enabled: bool, consent: str | None) -> ConnectionMeta:
-        meta, _ = self.accounts.credentials.get(connection_id, user=user)
-        if enabled:
-            if meta.environment is not Environment.TESTNET:
-                raise TradingRefused("Trading Mode is available only on testnet/demo connections (AGENTS.md §2)")
-            if not meta.permissions.can_trade:
-                raise TradingRefused("this key has no trading permission at the exchange")
-            if consent != CONSENT_TEXT:
-                raise TradingRefused("Trading Mode needs your explicit consent to the exact consent text")
-        updated = meta.model_copy(update={"trading_enabled": enabled})
-        self.accounts.credentials.update_meta(updated)
-        if not enabled:
-            self._drop_previews(connection_id)
-        return updated
-
-    def _drop_previews(self, connection_id: str) -> None:
-        with self._lock:
+        def change(meta: ConnectionMeta) -> ConnectionMeta:
+            if enabled:
+                if meta.environment is not Environment.TESTNET:
+                    raise TradingRefused("Trading Mode is available only on testnet/demo connections (AGENTS.md §2)")
+                if not meta.permissions.can_trade:
+                    raise TradingRefused("this key has no trading permission at the exchange")
+                if consent != CONSENT_TEXT:
+                    raise TradingRefused("Trading Mode needs your explicit consent to the exact consent text")
+            return meta.model_copy(update={"trading_enabled": enabled})
+        meta, _ = self.accounts.credentials.get(connection_id, user=user)  # expiry enforced before any change
+        change(meta)  # a refused change leaves pending previews alone; update_meta re-checks it atomically
+        with self._lock:  # bump first: a preview being built right now can no longer be stored or submitted
+            self._mode_gen[connection_id] = self._mode_gen.get(connection_id, 0) + 1
             for pid in [p for p, v in self._previews.items() if v.connection_id == connection_id]:
                 del self._previews[pid]
+        return self.accounts.credentials.update_meta(connection_id, user=user, mutate=change)
 
     def _tradable(self, connection_id: str, user: str):
         meta, cred, adapter = self.accounts.open_connection(connection_id, user)  # expiry checked on every use
@@ -168,6 +168,8 @@ class TradingService:
 
     # ---- preview ----
     def preview(self, connection_id: str, draft: OrderDraft, *, user: str) -> tuple[Preview, str]:
+        with self._lock:
+            gen = self._mode_gen.get(connection_id, 0)
         meta, cred, adapter = self._tradable(connection_id, user)
         if draft.type == "limit" and draft.price is None:
             raise TradingRefused("a limit order needs a price")
@@ -179,6 +181,9 @@ class TradingService:
         reference = adapter.reference_price(draft.symbol, draft.market)
         price = draft.price if draft.type == "limit" else reference
         checks = validate_against_rules(draft, rules, price)
+        if not all(c.ok for c in checks):  # before fees, balances and leverage: no signed calls for a refusal (SIMP-2)
+            failed = "; ".join(c.detail for c in checks if not c.ok)
+            raise TradingRefused(f"the order breaks exchange rules: {failed}")
         notional = draft.quantity * price
         estimates: dict[str, Any] = {
             "reference_price": {"value": str(reference), "provenance": "exchange_reported", "note": "last trade price"},
@@ -221,9 +226,6 @@ class TradingService:
                 warnings.append(f"sell quantity exceeds the {held} {rules.base_asset} you hold")
         if draft.type == "market":
             warnings.append("market orders fill at the prices available when they arrive, which can differ from the reference price")
-        if not all(c.ok for c in checks):
-            failed = "; ".join(c.detail for c in checks if not c.ok)
-            raise TradingRefused(f"the order breaks exchange rules: {failed}")
 
         preview_id = secrets.token_hex(8)
         request = OrderRequest(symbol=draft.symbol, market=draft.market, side=draft.side, type=draft.type,
@@ -234,8 +236,10 @@ class TradingService:
         preview = Preview(preview_id=preview_id, connection_id=connection_id, user=user, exchange=meta.exchange,
                           request=request, checks=checks, estimates=estimates, warnings=warnings,
                           expires_at=self._clock() + CONFIRM_TTL_S,
-                          token_digest=hashlib.sha256(token.encode()).digest())
+                          token_digest=hashlib.sha256(token.encode()).digest(), mode_gen=gen)
         with self._lock:
+            if self._mode_gen.get(connection_id, 0) != gen:
+                raise TradingRefused("Trading Mode changed while the preview was being built; preview again")
             self._expire_locked()
             if len(self._previews) >= MAX_PENDING_PREVIEWS:
                 raise TradingRefused("too many unconfirmed previews; confirm or wait for them to expire")
@@ -249,90 +253,160 @@ class TradingService:
 
     # ---- submit ----
     def submit(self, preview_id: str, confirm_token: str, *, user: str) -> dict[str, Any]:
+        digest = hashlib.sha256(confirm_token.encode()).digest()
         with self._lock:  # single use: the preview leaves the table before anything is sent
-            preview = self._previews.pop(preview_id, None)
-        if preview is None or preview.user != user:
-            raise TradingRefused("unknown or already used preview; create a new preview")
+            preview = self._previews.get(preview_id)
+            if preview is None or preview.user != user:  # someone else's preview is not touched
+                raise TradingRefused("unknown or already used preview; create a new preview")
+            if not hmac.compare_digest(digest, preview.token_digest):  # a wrong token does not burn the preview
+                raise TradingRefused("the confirmation token does not match this preview; create a new preview")
+            del self._previews[preview_id]
+            if self._mode_gen.get(preview.connection_id, 0) != preview.mode_gen:
+                raise TradingRefused("Trading Mode changed after this preview; create a new preview")
         if preview.expires_at <= self._clock():
             raise TradingRefused("the confirmation expired; create a new preview")
-        if not hmac.compare_digest(hashlib.sha256(confirm_token.encode()).digest(), preview.token_digest):
-            raise TradingRefused("the confirmation token does not match this preview; create a new preview")
         meta, cred, adapter = self._tradable(preview.connection_id, user)  # mode and expiry re-checked now
+        req = preview.request
+        with self._lock:  # marked before the SENDING row exists, so resolve() can never see it unmarked
+            self._sending.add(req.client_order_id)
+        try:
+            return self._journal_and_send(preview, meta, cred, adapter, user)
+        finally:
+            with self._lock:
+                self._sending.discard(req.client_order_id)
+
+    def _journal_and_send(self, preview: Preview, meta, cred, adapter, user: str) -> dict[str, Any]:
         req = preview.request
         self.journal.journal_insert({"client_order_id": req.client_order_id, "user_id": user,
                                      "connection_id": meta.connection_id, "exchange": meta.exchange,
                                      "environment": str(meta.environment), "state": "SENDING",
-                                     "request_json": json.dumps(asdict(req), default=str)})
+                                     "key_hint": meta.key_hint, "request_json": json.dumps(asdict(req), default=str)})
+        with self._lock:  # last check right before sending: Trading Mode not switched since the preview
+            switched = self._mode_gen.get(preview.connection_id, 0) != preview.mode_gen
+        if switched:
+            self.journal.journal_update(req.client_order_id, state="REJECTED",
+                                        message="not sent: Trading Mode changed before sending")
+            raise TradingRefused("Trading Mode changed before sending; nothing was sent")
+        return self._send(meta, cred, adapter, req)
+
+    def _send(self, meta, cred, adapter, req: OrderRequest) -> dict[str, Any]:
+        started = self._wall_ms()
         try:
             order = adapter.place_order(cred, req)
         except (OutcomeUnknown, ExchangeUnavailable) as exc:  # not a definite rejection: look it up, never resend
-            self.journal.journal_update(req.client_order_id, state="UNKNOWN", message=str(exc))
+            # Only from SENDING: a concurrent status check may already have found the order.
+            self.journal.journal_update(req.client_order_id, state="UNKNOWN", message=str(exc), only_from="SENDING")
             self.accounts.clear_cache(meta.connection_id)
             return self._reconcile(adapter, cred, req.client_order_id, req.symbol, req.market,
                                    note="the send outcome was unknown, so the order was looked up instead of resent")
         except ExchangeError as exc:
-            self.journal.journal_update(req.client_order_id, state="REJECTED", message=str(exc))
+            self.journal.journal_update(req.client_order_id, state="REJECTED", message=str(exc), only_from="SENDING")
             raise TradingRefused(f"the exchange rejected the order: {exc}") from None
-        self.journal.journal_update(req.client_order_id, state=order.status.value, order_json=order.model_dump_json())
+        stored = self._seen(req.client_order_id, order, started)
         self.accounts.clear_cache(meta.connection_id)
-        return {"client_order_id": req.client_order_id, "state": order.status.value, "order": order.model_dump(mode="json"),
+        return {"client_order_id": req.client_order_id, "state": stored, "order": order.model_dump(mode="json"),
                 "note": "Accepted by the exchange. Check its status: acceptance does not mean it filled."}
 
-    # ---- reconcile / cancel ----
+    def _seen(self, client_order_id: str, order: Order, started_ms: int) -> str | None:
+        """The exchange answered with this order (acknowledgement or lookup): it exists at the exchange."""
+        return self.journal.journal_seen(client_order_id, state=order.status.value, order_json=order.model_dump_json(),
+                                         exchange_order_id=order.order_id or None, now_ms=max(self._wall_ms(), started_ms))
+
+    # ---- reconcile / cancel / resolve ----
     def reconcile(self, client_order_id: str, *, user: str) -> dict[str, Any]:
         row = self._row(client_order_id, user)
         req = json.loads(row["request_json"])
-        meta, cred, adapter = self.accounts.open_connection(row["connection_id"], user)
-        return self._reconcile(adapter, cred, client_order_id, req["symbol"], req["market"])
+        _, cred, adapter, note = self._open_for_row(row, user)
+        return self._reconcile(adapter, cred, client_order_id, req["symbol"], req["market"], note=note)
 
     def _reconcile(self, adapter, cred, client_order_id: str, symbol: str, market: str, note: str = "") -> dict[str, Any]:
+        prefix = note + "; " if note else ""
+        started = self._wall_ms()
         try:
             order = adapter.query_order(cred, symbol, market, client_order_id=client_order_id)
         except ExchangeError as exc:
-            return {"client_order_id": client_order_id, "state": "UNKNOWN",
-                    "note": f"{note + '; ' if note else ''}lookup failed ({exc}); reconcile again later. Do not resend."}
-        row = (self.journal.journal_row(client_order_id) or {})
-        prefix = note + "; " if note else ""
-        if order is None:
-            if row.get("state") in TERMINAL:  # old orders get purged by exchanges: keep the last known final state
-                return {"client_order_id": client_order_id, "state": row["state"],
-                        "note": prefix + "the exchange no longer lists this order; its last known state is kept"}
-            lookups = self.journal.journal_lookup(client_order_id)
-            age_ms = self._wall_ms() - int(row.get("created_at") or 0)
-            if lookups >= NOT_FOUND_AFTER_LOOKUPS and age_ms >= NOT_FOUND_AFTER_MS:
-                self.journal.journal_update(client_order_id, state="NOT_FOUND",
-                                            message=f"not found in {lookups} lookups over {age_ms // 1000} s")
-                return {"client_order_id": client_order_id, "state": "NOT_FOUND",
-                        "note": prefix + "the exchange has no such order after repeated lookups; it most likely never "
-                                "arrived. You may place a new order."}
-            self.journal.journal_update(client_order_id, state="UNKNOWN",
-                                        message=f"not listed yet (lookup {lookups}); exchanges can show new orders late")
-            return {"client_order_id": client_order_id, "state": "UNKNOWN",
-                    "note": prefix + "the exchange does not list this order yet. Check again in a few seconds; "
-                            "do not resend."}
-        stored = self.journal.journal_update(client_order_id, state=order.status.value, order_json=order.model_dump_json())
-        if stored != order.status.value:  # a final state recorded meanwhile (e.g. a concurrent cancel) is kept
-            return {"client_order_id": client_order_id, "state": stored, "note": prefix + "final state kept"}
-        return {"client_order_id": client_order_id, "state": stored, "order": order.model_dump(mode="json"),
-                "note": note or "status from the exchange"}
+            self.journal.journal_miss(client_order_id, now_ms=self._wall_ms(), started_ms=started,
+                                      min_spacing_ms=MISS_SPACING_MS, verification="lookup_failed")
+            row = self.journal.journal_row(client_order_id) or {}
+            return {"client_order_id": client_order_id, "state": row.get("state", "UNKNOWN"),
+                    "verification": row.get("verification") or "lookup_failed",
+                    "note": f"{prefix}lookup failed ({exc}); check again later. Do not resend."}
+        if order is not None:
+            stored = self._seen(client_order_id, order, started)
+            return {"client_order_id": client_order_id, "state": stored, "verification": "confirmed",
+                    "order": order.model_dump(mode="json"),
+                    "note": prefix + ("status from the exchange" if stored == order.status.value else "final state kept")}
+        # Not listed. That is never proof the order was not executed: the state is left as it was.
+        misses = self.journal.journal_miss(client_order_id, now_ms=self._wall_ms(), started_ms=started,
+                                           min_spacing_ms=MISS_SPACING_MS)
+        row = self.journal.journal_row(client_order_id) or {}
+        state = row.get("state", "UNKNOWN")
+        if row.get("acknowledged"):
+            msg = (f"the exchange confirmed this order before (last confirmed state {state}) but does not list it now. "
+                   "Exchanges delay and purge order listings, so this does not mean it was never executed. "
+                   "Do not place it again; check your order history at the exchange.")
+        else:
+            msg = (f"the exchange does not list this order (miss {misses}). That does not prove it was never "
+                   "executed: listings can lag, and old orders get purged. Do not place it again until you have "
+                   "checked the exchange's order history; then you can mark it resolved.")
+        # A miss that arrived after a newer confirmation was ignored: report what is stored.
+        return {"client_order_id": client_order_id, "state": state, "verification": row.get("verification") or "not_listed",
+                "misses": misses,
+                "note": prefix + msg}
 
     def cancel(self, client_order_id: str, *, user: str) -> dict[str, Any]:
         row = self._row(client_order_id, user)
         req = json.loads(row["request_json"])
-        meta, cred, adapter = self.accounts.open_connection(row["connection_id"], user)  # expiry still enforced
+        meta, cred, adapter, note = self._open_for_row(row, user)  # expiry still enforced
         if meta.environment is not Environment.TESTNET:
             raise TradingRefused("orders exist only on testnet/demo connections")
-        # Cancelling only lowers risk, so it stays available after Trading Mode is turned off.
+        # Cancelling only lowers risk, so it stays available after Trading Mode is turned off, and for orders whose
+        # state is uncertain (UNKNOWN / not listed).
         self.accounts.clear_cache(meta.connection_id)
+        started = self._wall_ms()
         try:
-            order = adapter.cancel_order(cred, req["symbol"], req["market"], client_order_id=client_order_id)
+            order = adapter.cancel_order(cred, req["symbol"], req["market"], client_order_id=client_order_id,
+                                         exchange_order_id=row.get("exchange_order_id"))
         except OutcomeUnknown as exc:
             return self._reconcile(adapter, cred, client_order_id, req["symbol"], req["market"],
                                    note=f"cancel outcome unknown ({exc}); looked the order up")
         except ExchangeError as exc:
             raise TradingRefused(f"the exchange refused the cancel: {exc}") from None
-        stored = self.journal.journal_update(client_order_id, state=order.status.value, order_json=order.model_dump_json())
-        return {"client_order_id": client_order_id, "state": stored, "order": order.model_dump(mode="json")}
+        stored = self._seen(client_order_id, order, started)
+        return {"client_order_id": client_order_id, "state": stored, "order": order.model_dump(mode="json"),
+                **({"note": note} if note else {})}
+
+    def resolve(self, client_order_id: str, *, user: str) -> dict[str, Any]:
+        """The user checked the exchange's order history and asks to stop tracking an unsettled, never-acknowledged
+        order. Acknowledged orders are never resolved this way: their state comes from the exchange."""
+        row = self._row(client_order_id, user)
+        if row.get("acknowledged"):
+            raise TradingRefused("the exchange acknowledged this order; its state comes from the exchange, not from here")
+        with self._lock:
+            if client_order_id in self._sending:
+                raise TradingRefused("this order is being sent right now; wait for the exchange's answer")
+        stored = self.journal.journal_resolve(client_order_id, note="marked resolved by the user after checking the exchange")
+        if stored != "USER_RESOLVED":  # also when the exchange acknowledged it after the check above
+            raise TradingRefused(f"this order is {stored}; only never-acknowledged SENDING, UNKNOWN or NOT_FOUND "
+                                 "orders can be resolved")
+        return {"client_order_id": client_order_id, "state": stored,
+                "note": "Marked resolved by you. If the exchange later shows this order, check it there."}
+
+    def _open_for_row(self, row: dict[str, Any], user: str):
+        """The connection that sent the order, or (if it expired, was disconnected or ended with the last session)
+        a current connection with the same exchange, environment and key, so an unsettled order is never orphaned.
+        Another key may belong to another account, where the order would look missing."""
+        try:
+            return (*self.accounts.open_connection(row["connection_id"], user), "")
+        except (CredentialExpired, CredentialNotFound):
+            for meta in self.accounts.connections(user=user):
+                if (meta.exchange == row["exchange"] and str(meta.environment) == row["environment"]
+                        and row.get("key_hint") and meta.key_hint == row["key_hint"]):
+                    return (*self.accounts.open_connection(meta.connection_id, user),
+                            f"checked through your current {meta.exchange} {meta.environment} connection")
+            key = f" (the key ending {row['key_hint']})" if row.get("key_hint") else ""
+            raise TradingRefused(f"the connection that sent this order is gone. Connect the same {row['exchange']} "
+                                 f"{row['environment']} key{key} to check or cancel it; the order record is kept.") from None
 
     def _row(self, client_order_id: str, user: str) -> dict[str, Any]:
         rows = self.journal.journal(user, client_order_id=client_order_id)
@@ -341,7 +415,8 @@ class TradingService:
         return rows[0]
 
     def needs_reconcile(self, *, user: str) -> list[dict[str, Any]]:
-        """Orders whose outcome was never confirmed (e.g. the app stopped while sending)."""
+        """Orders not settled yet: outcome never confirmed (e.g. the app stopped while sending), or acknowledged
+        but not final."""
         return self.journal.journal_open(user)
 
 

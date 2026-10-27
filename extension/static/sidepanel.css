@@ -19,6 +19,8 @@
   --raised: #1b1a3a;
   --rule: #262552;
   --rule-strong: #3a3873;
+  /* Edges of inputs, selects and text areas: at least 3:1 against ground, surface and raised (WCAG 1.4.11). */
+  --control-edge: #6e6aae;
   --ink: #eceaff;
   --ink-2: #c3c0e8;
   --muted: #9894c4;
@@ -75,7 +77,7 @@ button, input, select, textarea {
   border: 1px solid var(--rule-strong); border-radius: var(--radius); padding: 0.38rem 0.6rem;
   max-width: 100%;
 }
-input, select, textarea { background: var(--ground); }
+input, select, textarea { background: var(--ground); border-color: var(--control-edge); }
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 button { cursor: pointer; font-weight: 550; }
 button:hover { background: var(--raised); }
@@ -257,12 +259,6 @@ tr:last-child > td, tr:last-child > th { border-bottom: 0; }
   .matrix th, .matrix td { padding: 0.3rem 0.32rem; }
 }
 
-/* Forced colors drop custom colors: keep the selected tab and lanes distinguishable with system colors. */
-@media (forced-colors: active) {
-  [role="tab"][aria-selected="true"] { border-bottom-color: Highlight; }
-  .lane, .perspective, .model-output, .facts, .support, .contra { border-inline-start-color: CanvasText; }
-}
-
 /* ---------- accounts ---------- */
 .subnav { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.2rem 0 0.6rem; }
 .subnav button { padding: 0.3rem 0.6rem; font-size: 0.84rem; color: var(--muted); }
@@ -339,4 +335,12 @@ input, select { font-family: var(--ui); }
 
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}
+
+/* Forced colors drop custom colors: keep the selected tab and lanes distinguishable with system colors.
+ * Kept LAST so it wins over the neon layer's later [role="tab"] rules at equal specificity. */
+@media (forced-colors: active) {
+  [role="tab"][aria-selected="true"] { border-bottom: 2px solid Highlight; background: Canvas; }
+  .lane, .perspective, .model-output, .facts, .support, .contra { border-inline-start-color: CanvasText; }
+  input, select, textarea { border-color: CanvasText; }
 }

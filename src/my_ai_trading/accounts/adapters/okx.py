@@ -248,6 +248,8 @@ class OKX(ExchangeAdapter):
         if not isinstance(perm, str):
             return KeyPermissions(source="okx account/config (perm missing)")
         tokens = {t.strip() for t in perm.split(",") if t.strip()}
+        if "read_only" not in tokens:  # every OKX key reports read_only; without it nothing is known (SEC-2)
+            return KeyPermissions(source="okx account/config (perm not recognized)")
         trade, unknown = "trade" in tokens, bool(tokens - {"read_only", "trade", "withdraw"})
         ip = cfg.get("ip")
         return KeyPermissions(
@@ -482,7 +484,8 @@ class OKX(ExchangeAdapter):
             raise
         return self._order(rows[0]) if rows and isinstance(rows[0], dict) else None
 
-    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str) -> Order:
+    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str,
+                     exchange_order_id: str | None = None) -> Order:
         self._require_testnet()
         inst_id = to_inst_id(symbol, market)
         self._signed(cred, "POST", "/api/v5/trade/cancel-order", body={"instId": inst_id, "clOrdId": client_order_id},

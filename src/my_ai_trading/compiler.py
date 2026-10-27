@@ -35,7 +35,9 @@ _TF_WORDS = {
     "day": "1d", "weekly": "1w", "week": "1w", "15-minute": "15m", "5-minute": "5m", "30-minute": "30m",
     "2-hour": "2h", "12-hour": "12h", "monthly": "1M", "month": "1M",
 }
-_TF = r"(?P<tf>\d{1,2}\s?[mhdw]|hourly|daily|weekly|monthly|\d{1,2}-(?:minute|hour)|one-hour|four-hour|day|week|month)"
+# Word-bounded: "1 month" must never read as "1 m" (one minute), nor "today" as "day" (DATA-1).
+_TF = (r"\b(?P<tf>\d{1,2}[ -]?(?:minute|hour|day|week|month)s?|\d{1,2}\s?[mhdw]|hourly|daily|weekly|monthly"
+       r"|one-hour|four-hour|day|week|month)\b")
 _MA = r"(?P<ma>sma|ema|ma)\s?\(?(?P<n>\d{1,3})\)?"
 
 
@@ -45,10 +47,24 @@ def _tf(raw: str | None) -> str | None:
     raw = raw.lower().replace(" ", "")
     if raw in _TF_WORDS:
         return _TF_WORDS[raw]
-    m = re.fullmatch(r"(\d{1,2})([mhdw])", raw)
+    m = re.fullmatch(r"(\d{1,2})(?:-?(minute|hour|day|week|month)s?|([mhdw]))", raw)
     if m:
-        code = f"{int(m.group(1))}{m.group(2)}"
-        return code if code in {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"} else None
+        unit = {"minute": "m", "hour": "h", "day": "d", "week": "w", "month": "M"}.get(m.group(2)) or m.group(3)
+        code = f"{int(m.group(1))}{unit}"
+        return code if code in {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w",
+                                "1M"} else None
+    return None
+
+
+# A clause must be consumed whole: any other word could change its meaning ("does not", "today", ...).
+_FILLER = {"the", "a", "an", "current", "chart", "timeframe"}
+_NEGATION = re.compile(r"\b(?:not|no|never|neither|nor|without|unless|except|fails?|cannot)\b|n['’]t\b")
+
+
+def _find(pattern: str, t: str) -> re.Match[str] | None:
+    m = re.search(pattern, t)
+    if m and set((t[:m.start()] + " " + t[m.end():]).split()) <= _FILLER:
+        return m
     return None
 
 
@@ -78,15 +94,19 @@ def _metric(ma: str, n: str, tf: str) -> MetricRef:
 def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
                   context: dict[str, str]) -> Any | None:
     # "1M" means one month; lowercasing would turn it into "1m" (one minute).
-    t = re.sub(r"\s+", " ", re.sub(r"\b1M\b", "monthly", text)).strip().lower()  # single spaces: no backtracking over whitespace runs
-    if len(t) > MAX_CLAUSE_CHARS:
+    t = re.sub(r"\s+", " ", re.sub(r"\b1\s?M\b", "monthly", text)).strip().lower()  # also "1 M" (re-audit)  # single spaces: no backtracking over whitespace runs
+    if len(t) > MAX_CLAUSE_CHARS or _NEGATION.search(t):
         return None
 
-    def need_tf(found: str | None, what: str) -> str | None:
-        tf = _tf(found)
-        if tf:
-            context["tf"] = tf
-            return tf
+    def need_tf(found: str | None | tuple[str | None, ...], what: str) -> str | None:
+        given = [f for f in (found if isinstance(found, tuple) else (found,)) if f]
+        if given:
+            # An explicit timeframe is never replaced: unsupported or conflicting ones leave the clause unresolved.
+            tfs = {_tf(f) for f in given}
+            if None in tfs or len(tfs) > 1:
+                return None
+            context["tf"] = tfs.pop()
+            return context["tf"]
         if context.get("tf"):
             assumptions.append(f"'{what}': no timeframe given; assumed {context['tf']} from the earlier clause")
             return context["tf"]
@@ -95,10 +115,10 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
             return default_tf
         return None
 
-    m = re.search(rf"(?:(?:an?|the) )?(?:{_TF} )?(?:(?:candle|bar|close|price) )?(?:closes?|is|trades?) "
+    m = _find(rf"(?:(?:an?|the) )?(?:{_TF} )?(?:(?:candle|bar|close|price) )?(?:closes?|is|trades?) "
                   rf"(?P<dir>above|below|over|under)\s+(?:the\s+)?{_MA}(?:\s+on\s+(?:the\s+)?{_TF.replace('tf', 'tf2')})?", t)
     if m:
-        tf = need_tf(m.group("tf") or m.group("tf2"), text)
+        tf = need_tf((m.group("tf"), m.group("tf2")), text)
         if not tf:
             return None
         op = ">" if m.group("dir") in ("above", "over") else "<"
@@ -106,7 +126,7 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
             assumptions.append(f"'MA{m.group('n')}' interpreted as a simple moving average (SMA)")
         return Compare(left=MetricRef(name="close", timeframe=tf), op=op, right=_metric(m.group("ma"), m.group("n"), tf))
 
-    m = re.search(rf"(?:{_TF} )?(?:(?:price|close) )?cross(?:es)? (?P<dir>above|below)\s+(?:the\s+)?{_MA}", t)
+    m = _find(rf"(?:{_TF} )?(?:(?:price|close) )?cross(?:es)? (?P<dir>above|below)\s+(?:the\s+)?{_MA}", t)
     if m:
         tf = need_tf(m.group("tf"), text)
         if not tf:
@@ -115,7 +135,7 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
                        op="crosses_above" if m.group("dir") == "above" else "crosses_below",
                        right=_metric(m.group("ma"), m.group("n"), tf))
 
-    m = re.search(r"volume\s+(?:is\s+)?(?:at least|>=|above|over|greater than|more than)\s+(?P<k>\d+(?:\.\d+)?)\s?x"
+    m = _find(r"volume\s+(?:is\s+)?(?:at least|>=|above|over|greater than|more than)\s+(?P<k>\d+(?:\.\d+)?)\s?x"
                   r"(?:\s+(?:its|the))?\s+(?:prior|previous|last)\s+(?P<n>\d{1,3})[- ]?(?:bar|candle|period)s?"
                   rf"(?:\s+average)?(?:\s+on\s+(?:the\s+)?{_TF})?", t)
     if m:
@@ -129,10 +149,10 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
         return Compare(left=MetricRef(name="volume_ratio", period=int(m.group("n")), timeframe=tf),
                        op=op, right=float(m.group("k")))
 
-    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?adx\s?\(?(?P<n>\d{{1,3}})?\)?\s+(?:is\s+)?(?P<dir>below|above|under|over)\s+(?P<v>\d{{1,3}}(?:\.\d+)?)"
+    m = _find(rf"(?:{_TF.replace('tf', 'tf0')} )?adx\s?\(?(?P<n>\d{{1,3}})?\)?\s+(?:is\s+)?(?P<dir>below|above|under|over)\s+(?P<v>\d{{1,3}}(?:\.\d+)?)"
                   rf"(?:\s+on\s+(?:the\s+)?{_TF})?", t)
     if m:
-        tf = need_tf(m.group("tf") or m.group("tf0"), text)
+        tf = need_tf((m.group("tf"), m.group("tf0")), text)
         if not tf:
             return None
         if not m.group("n"):
@@ -140,20 +160,20 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
         return Compare(left=MetricRef(name="adx", period=int(m.group("n") or 14), timeframe=tf),
                        op="<" if m.group("dir") in ("below", "under") else ">", right=float(m.group("v")))
 
-    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: line)? cross(?:es)? (?P<dir>above|below) (?:the )?signal(?: line)?"
+    m = _find(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: line)? cross(?:es)? (?P<dir>above|below) (?:the )?signal(?: line)?"
                   rf"(?: on (?:the )?{_TF})?", t)
     if m:
-        tf = need_tf(m.group("tf") or m.group("tf0"), text)
+        tf = need_tf((m.group("tf"), m.group("tf0")), text)
         if not tf:
             return None
         assumptions.append("MACD uses the standard 12/26/9 periods")
         return Compare(left=MetricRef(name="macd_histogram", timeframe=tf),
                        op="crosses_above" if m.group("dir") == "above" else "crosses_below", right=0.0)
 
-    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: (?P<part>histogram|line))? (?:is )?(?P<dir>above|below|over|under) "
+    m = _find(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: (?P<part>histogram|line))? (?:is )?(?P<dir>above|below|over|under) "
                   rf"(?:zero|0)(?: on (?:the )?{_TF})?", t)
     if m:
-        tf = need_tf(m.group("tf") or m.group("tf0"), text)
+        tf = need_tf((m.group("tf"), m.group("tf0")), text)
         if not tf:
             return None
         assumptions.append("MACD uses the standard 12/26/9 periods")
@@ -162,10 +182,10 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
         return Compare(left=MetricRef(name=name, timeframe=tf),
                        op=">" if m.group("dir") in ("above", "over") else "<", right=0.0)
 
-    m = re.search(rf"(?:{_TF} )?(?:close|price) (?:closes |is )?(?P<dir>above|below) (?:the )?(?P<band>upper|lower) "
+    m = _find(rf"(?:{_TF} )?(?:close|price) (?:closes |is )?(?P<dir>above|below) (?:the )?(?P<band>upper|lower) "
                   rf"bollinger(?: band)?(?: on (?:the )?{_TF.replace('tf', 'tf2')})?", t)
     if m:
-        tf = need_tf(m.group("tf") or m.group("tf2"), text)
+        tf = need_tf((m.group("tf"), m.group("tf2")), text)
         if not tf:
             return None
         assumptions.append("Bollinger Bands use 20 periods and 2 standard deviations")
@@ -174,10 +194,10 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
         return Compare(left=MetricRef(name="bollinger_percent_b", period=20, timeframe=tf),
                        op=">" if above else "<", right=level)
 
-    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?rsi\s?\(?(?P<n>\d{{1,3}})?\)?\s+(?:is\s+)?(?P<dir>below|above|under|over)\s+(?P<v>\d{{1,3}}(?:\.\d+)?)"
+    m = _find(rf"(?:{_TF.replace('tf', 'tf0')} )?rsi\s?\(?(?P<n>\d{{1,3}})?\)?\s+(?:is\s+)?(?P<dir>below|above|under|over)\s+(?P<v>\d{{1,3}}(?:\.\d+)?)"
                   rf"(?:\s+on\s+(?:the\s+)?{_TF})?", t)
     if m:
-        tf = need_tf(m.group("tf") or m.group("tf0"), text)
+        tf = need_tf((m.group("tf"), m.group("tf0")), text)
         if not tf:
             return None
         n = m.group("n")
@@ -186,17 +206,19 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
         return Compare(left=MetricRef(name="rsi_wilder", period=int(n or 14), timeframe=tf),
                        op="<" if m.group("dir") in ("below", "under") else ">", right=float(m.group("v")))
 
-    m = re.search(rf"(?:breaks?|closes?)\s+(?P<dir>above|below)\s+(?:the\s+)?(?:prior|previous)\s+(?P<n>\d{{1,3}})[- ]?"
-                  rf"(?:bar|candle|day)s?\s+(?P<hl>high|low)(?:\s+on\s+(?:the\s+)?{_TF})?", t)
+    m = _find(rf"(?:breaks?|closes?)\s+(?P<dir>above|below)\s+(?:the\s+)?(?:prior|previous)\s+(?P<n>\d{{1,3}})[- ]?"
+                  rf"(?P<unit>bar|candle|day)s?\s+(?P<hl>high|low)(?:\s+on\s+(?:the\s+)?{_TF})?", t)
     if m:
         tf = need_tf(m.group("tf"), text)
         if not tf:
             return None
+        if m.group("unit") == "day" and tf != "1d":
+            return None  # "20-day" on another timeframe is not 20 bars (PRD F03)
         name = "prior_high" if m.group("hl") == "high" else "prior_low"
         return Compare(left=MetricRef(name="close", timeframe=tf), op=">" if m.group("dir") == "above" else "<",
                        right=MetricRef(name=name, period=int(m.group("n")), timeframe=tf))
 
-    m = re.search(rf"{_TF}\s+trend\s+(?:is\s+)?(?P<state>bullish|bearish|up|down|uptrend|downtrend)", t)
+    m = _find(rf"{_TF}\s+trend\s+(?:is\s+)?(?P<state>bullish|bearish|uptrend|downtrend|up|down)", t)
     if m:
         tf = _tf(m.group("tf"))
         if not tf:

@@ -113,12 +113,19 @@ class KlineStreams:
         import websockets  # optional dependency: pip install '.[accounts]'
         return await websockets.connect(url, open_timeout=10, ping_interval=None, max_size=2**20, max_queue=64)
 
-    async def _run_chunk(self, market: str, names: list[str], stop: asyncio.Event) -> None:
+    def reconnect_delay_s(self, failures: int) -> float:
+        """Exponential backoff with jitter; jitter is applied BEFORE the cap so the delay never exceeds
+        MAX_BACKOFF_S (PERF-8)."""
+        return min(MAX_BACKOFF_S, 2 ** min(failures, 7) * (0.5 + self.rng.random()))
+
+    async def _run_chunk(self, market: str, names: list[str], version: int, stop: asyncio.Event) -> None:
+        """``version`` is the subscription version ``names`` were built from (captured together, FLOW-7): a
+        change during the handshake ends this connection at once instead of being missed."""
         st = self.status[market]
         url = f"{HOSTS[market]}?streams={'/'.join(names)}"
         ws = await self._connect(url)
         st.connected, st.connects, st.last_error = True, st.connects + 1, None
-        opened, version = self.clock(), self.versions.get(market, 0)
+        opened = self.clock()
         try:
             while not stop.is_set() and version == self.versions.get(market, 0) and self.clock() - opened < ROTATE_AFTER_S:
                 if st.failures and self.clock() - opened >= HEALTHY_AFTER_S:
@@ -138,6 +145,7 @@ class KlineStreams:
     async def _run_market(self, market: str, stop: asyncio.Event) -> None:
         st = self.status.setdefault(market, StreamStatus(market))
         while not stop.is_set():
+            version = self.versions.get(market, 0)  # read with the names, before any await
             wanted = stream_names(self.subs.get(market, set()))
             names = wanted[:MAX_STREAMS_PER_CONNECTION]
             st.streams, st.dropped_streams = len(names), len(wanted) - len(names)
@@ -148,11 +156,11 @@ class KlineStreams:
                 await asyncio.sleep(1)
                 continue
             try:
-                await self._run_chunk(market, names, stop)
+                await self._run_chunk(market, names, version, stop)
             except Exception as exc:  # network errors, handshake refusals, server shutdowns
                 st.failures += 1
                 st.last_error = type(exc).__name__
-                delay = min(MAX_BACKOFF_S, 2 ** min(st.failures, 7)) * (0.5 + self.rng.random())  # backoff + jitter
+                delay = self.reconnect_delay_s(st.failures)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=delay)
                 except TimeoutError:
