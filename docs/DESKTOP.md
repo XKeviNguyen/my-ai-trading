@@ -38,9 +38,18 @@ allowlist is tied to its port); the app itself always uses 8765 and has no optio
 | Settings | `GET`/`PUT /settings`, `GET /health` | Token source and connection test, default analysis timeframe, watchlist, pause alerts, quiet hours (UTC), AI data consent and deep-analysis opt-in with explanations, monthly token/USD budgets. Saves fetch the current settings and PUT the full object back. |
 
 Keyboard: Ctrl+1 … Ctrl+8 switch tabs; field labels have Alt mnemonics; Tab moves through controls
-(multi-line text boxes pass Tab on instead of inserting it). Fonts follow the system font and scale with
-it, layouts wrap at small window sizes (minimum 360 × 420), and the app uses the system palette (no
-hard-coded colors), so it follows the desktop light/dark theme.
+(multi-line text boxes pass Tab on instead of inserting it). Layouts wrap at small window sizes (minimum
+360 × 420).
+
+## Theme
+
+`theme.py` applies the same neon night design as the Chrome side panel (`extension/static/sidepanel.css`):
+the same color tokens, one color per kind of information (indigo perspectives, magenta model output, amber
+risk and invalidation, cyan events, red data faults, green freshness), and the same bundled fonts
+(Chakra Petch for interface text, Share Tech Mono for numbers, both SIL OFL 1.1, licenses in
+`my_ai_trading_desktop/fonts/`). Red and green never mean price direction. Every text color meets WCAG AA
+(4.5:1) on its background, and tests check that the tokens and font files match the extension. When the OS
+asks for high contrast, the app keeps the system palette and fonts instead.
 
 ## Security notes
 

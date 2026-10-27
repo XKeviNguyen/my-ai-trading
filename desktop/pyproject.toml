@@ -24,6 +24,10 @@ my-ai-trading-desktop = "my_ai_trading_desktop.app:main"
 [tool.setuptools.packages.find]
 include = ["my_ai_trading_desktop*"]
 
+[tool.setuptools.package-data]
+# Bundled SIL OFL 1.1 fonts (same files as extension/static/fonts) and their licenses.
+my_ai_trading_desktop = ["fonts/*.ttf", "fonts/*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -p no:cacheprovider"

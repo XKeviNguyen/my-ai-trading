@@ -1,7 +1,7 @@
 // Pure helpers used by the views (no DOM needed).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { alertSummary, fmtAge, fmtMs, fmtNum, fmtUsd, isQuiet, maxSeq, mergeAlerts, notificationText } from "../build/src/format.js";
+import { alertSummary, fmtAge, fmtMs, fmtNum, fmtUsd, isQuiet, maxSeq, mergeAlerts, notificationText, statusLabel } from "../build/src/format.js";
 import { buildSelections } from "../build/src/views/methods.js";
 import { splitPrompts, NAME_RE } from "../build/src/views/studio.js";
 import { cleanWatchlist, TOKEN_RE } from "../build/src/views/settings.js";
@@ -104,4 +104,15 @@ test("screenshot client-side checks", () => {
   assert.match(checkImage({ type: "image/gif", size: 10 }), /PNG, JPEG or WEBP/);
   assert.match(checkImage({ type: "image/png", size: 0 }), /empty/);
   assert.match(checkImage(null), /Choose/);
+});
+
+test("status labels are plain text for any API string, including object-prototype names", () => {
+  assert.equal(statusLabel("OK"), "OK");
+  assert.equal(statusLabel("INSUFFICIENT_DATA"), "Too few bars"); // never "Short": that reads as a trade direction
+  assert.equal(statusLabel("STALE_DATA"), "Stale");
+  for (const hostile of ["constructor", "toString", "__proto__", "hasOwnProperty", "NEW_STATUS"]) {
+    assert.equal(statusLabel(hostile), hostile);
+  }
+  assert.equal(statusLabel(undefined), "—");
+  assert.equal(statusLabel(42), "—");
 });

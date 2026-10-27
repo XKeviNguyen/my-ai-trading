@@ -173,7 +173,7 @@ class AnalysisView(QWidget):
         if ev.get("bar_close_time_utc"):
             lay.addWidget(plain_label(f"Evaluated bar closed {F.text(ev.get('bar_close_time_utc'))}", muted=True))
         if ev.get("invalidation"):
-            lay.addWidget(plain_label(f"Invalidation: {F.text(ev.get('invalidation'))}"))
+            lay.addWidget(plain_label(f"Invalidation: {F.text(ev.get('invalidation'))}", name="invalidation"))
         checks = ev.get("checks") if isinstance(ev.get("checks"), dict) else {}
         if checks:
             lay.addWidget(collapsible(f"Checks ({len(checks)})",

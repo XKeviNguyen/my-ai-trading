@@ -67,7 +67,9 @@ running: run `my-ai-trading serve`"; 429/503 → retry-after; 422 → the valida
 
 The extension has no `tabs`, `scripting` or `<all_urls>` permission and no content scripts. It
 keeps the default MV3 content security policy, and all code ships in the package (no remote
-scripts, CDNs or fonts).
+scripts, CDNs or fonts). The two typefaces, Chakra Petch and Share Tech Mono, are bundled under
+`static/fonts/` with their SIL Open Font License files; a test fails the build if the stylesheet ever
+references anything but those local font files.
 
 ## What it does NOT do
 

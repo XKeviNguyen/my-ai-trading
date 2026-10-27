@@ -53,6 +53,19 @@ test("no remote scripts or styles in the side panel HTML", () => {
   assert.ok(!/\son[a-z]+=/i.test(html), "inline event handler present");
 });
 
+test("the stylesheet loads only bundled fonts, nothing remote", () => {
+  const css = readFileSync(join(dist, "sidepanel.css"), "utf8");
+  assert.ok(!/@import/i.test(css), "@import in sidepanel.css");
+  assert.ok(!/\bhttps?:\/\/|\/\/[a-z]/i.test(css.replace(/\/\*[\s\S]*?\*\//g, "")), "URL in sidepanel.css");
+  const urls = [...css.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)].map((m) => m[1]);
+  assert.ok(urls.length > 0, "expected the bundled @font-face sources");
+  for (const u of urls) {
+    assert.match(u, /^fonts\/[A-Za-z-]+\.ttf$/, `non-local url(${u})`);
+    assert.ok(existsSync(join(dist, u)), `missing bundled font ${u}`);
+  }
+  for (const lic of ["fonts/OFL-ChakraPetch.txt", "fonts/OFL-ShareTechMono.txt"]) assert.ok(existsSync(join(dist, lic)), `missing ${lic}`);
+});
+
 test("dist contains the files the manifest references", () => {
   const manifest = JSON.parse(readFileSync(join(dist, "manifest.json"), "utf8"));
   for (const p of [manifest.side_panel.default_path, manifest.background.service_worker, ...Object.values(manifest.icons)]) {
