@@ -16,14 +16,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+import re
+
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi import Path as PathParam
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .backtest import BacktestConfig, run_backtest, walk_forward
+from .accounts.api import account_router
+from .accounts.credentials import CredentialStore
+from .accounts.service import AccountService
+from .accounts.trading import TradingService
+from .accounts.trading_api import trading_router
 from .compiler import compile_prompts
 from .copilot import Copilot, MAX_IMAGE_BYTES, default_provider
 from .domain import Timeframe
@@ -80,14 +88,34 @@ MAX_JSON_BYTES = 64 * 1024
 MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 64 * 1024
 PUBLIC_PATHS = frozenset({"/api/v1/health"})
 UPLOAD_PATHS = frozenset({"/api/v1/copilot/vision"})
+# Private routes: account data and (testnet) trading. Browser pages may never reach them, even with a token.
+PRIVATE_PREFIXES = ("/api/v1/accounts", "/api/v1/trading")
+_EXTENSION_ORIGIN = re.compile(EXTENSION_ORIGIN_RE.encode())
+
+
+def _model_fields() -> frozenset[str]:
+    from .accounts.api import ConnectRequest
+    from .accounts.trading import OrderDraft
+    from .accounts.trading_api import CancelRequest, ModeRequest, PreviewRequest, SubmitRequest
+    names = {"body", "query", "path", "header"}
+    for m in (ConnectRequest, OrderDraft, ModeRequest, PreviewRequest, SubmitRequest, CancelRequest):
+        names.update(m.model_fields)
+    return frozenset(names | {"symbol", "market", "limit", "fresh", "environment", "cid", "coid"})
+
+
+SAFE_LOC_NAMES = _model_fields()
 
 
 class RequestGuard:
     """Outer ASGI guard that runs BEFORE any body is read or parsed: Host allowlist (DNS rebinding),
     bearer token for every API route except health, and a hard Content-Length cap."""
 
-    def __init__(self, app, *, allowed_hosts: set[str], token: str):
+    def __init__(self, app, *, allowed_hosts: set[str], token: str, extension_id: str | None = None):
         self.app, self.allowed_hosts, self.token = app, allowed_hosts, token.encode()
+        # Optional pin: when set, private routes accept only this extension's origin, not any extension.
+        self.extension_origin = f"chrome-extension://{extension_id}".encode() if extension_id else None
+        self.buckets = {"/api/v1/accounts": TokenBucket(rate_per_s=2.0, burst=30),
+                        "/api/v1/trading": TokenBucket(rate_per_s=1.0, burst=20)}
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -100,6 +128,14 @@ class RequestGuard:
             supplied = headers.get(b"authorization", b"").removeprefix(b"Bearer ").strip()
             if not supplied or not hmac.compare_digest(supplied, self.token):
                 return await _reject(send, 401, "missing or invalid API token")
+        if path.startswith(PRIVATE_PREFIXES):
+            origin = headers.get(b"origin")
+            allowed = (origin == self.extension_origin) if self.extension_origin else bool(_EXTENSION_ORIGIN.fullmatch(origin or b""))
+            if origin is not None and not allowed:
+                return await _reject(send, 403, "private routes accept only the extension or local apps")
+            prefix = next(p for p in PRIVATE_PREFIXES if path.startswith(p))
+            if method != "OPTIONS" and not self.buckets[prefix].take():
+                return await _reject(send, 429, "too many private requests; slow down")
         if method in ("POST", "PUT", "PATCH"):
             raw = headers.get(b"content-length")
             if raw is None or not raw.isdigit():
@@ -195,31 +231,50 @@ class BacktestRequest(BaseModel):
 
 def create_app(*, service: MarketDataService | None = None, store: Store | None = None,
                copilot: Copilot | None = None, api_token: str | None = None, port: int = 8765,
-               run_monitor: bool = False, enable_docs: bool = False) -> FastAPI:
+               run_monitor: bool = False, enable_docs: bool = False, run_streams: bool = False,
+               accounts: AccountService | None = None) -> FastAPI:
     service = service or MarketDataService(BinancePublic())
     store = store or Store(default_db_path())
+    if accounts is None:
+        accounts = AccountService(CredentialStore(store))
+    accounts.credentials.purge_on_start()  # session-only and expired keys end with the previous run
     copilot = copilot or Copilot(store, default_provider())
     token = api_token or load_or_create_token()
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     provider_bucket = TokenBucket(rate_per_s=2.0, burst=20)
     monitor = Monitor(service, store)
+    streams = None
+    if run_monitor and run_streams:
+        try:
+            import websockets  # noqa: F401  (optional: pip install '.[accounts]')
+            from .streams import KlineStreams
+            streams = KlineStreams(on_closed=monitor.wake)
+            monitor.on_subscriptions = streams.set_subscriptions
+        except ImportError:
+            streams = None  # REST schedule only
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         stop = asyncio.Event()
         task = asyncio.create_task(monitor.run_forever(stop=stop)) if run_monitor else None
+        stream_task = asyncio.create_task(streams.run(stop)) if streams else None
         yield
         stop.set()
-        if task:
-            await task
+        for t in (task, stream_task):
+            if t:
+                await t
 
     # Interactive docs load third-party scripts, so they are opt-in (`serve --docs`).
     app = FastAPI(title="My AI Trading (local)", version=__version__, lifespan=lifespan,
                   docs_url="/docs" if enable_docs else None, redoc_url=None,
                   openapi_url="/openapi.json" if enable_docs else None)
     app.state.monitor = monitor
-    app.add_middleware(RequestGuard, allowed_hosts=allowed_hosts, token=token)
-    app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN_RE, allow_methods=["GET", "POST", "PUT"],
+    extension_id = os.environ.get("MY_AI_TRADING_EXTENSION_ID", "").strip() or None
+    if extension_id and not re.fullmatch(r"[a-p]{32}", extension_id):
+        raise ValueError("MY_AI_TRADING_EXTENSION_ID must be a 32-letter Chrome extension ID (a-p)")
+    app.add_middleware(RequestGuard, allowed_hosts=allowed_hosts, token=token, extension_id=extension_id)
+    app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN_RE,
+                       allow_methods=["GET", "POST", "PUT", "DELETE"],
                        allow_headers=["Authorization", "Content-Type"], allow_credentials=False)
 
     def auth(authorization: str = Header(default="")) -> None:
@@ -260,6 +315,21 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
 
     A = [Depends(auth)]
     L = [Depends(auth), Depends(limited)]
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        # FastAPI echoes submitted values by default; a mistyped API secret must never come back in a response.
+        private = _request.url.path.startswith(PRIVATE_PREFIXES)
+
+        def loc(parts):  # a JSON key could itself be a pasted secret: keep only known field names and indexes
+            return [p if isinstance(p, int) or not private or p in SAFE_LOC_NAMES else "<field>" for p in parts]
+        safe = [{"type": e.get("type"), "loc": loc(e.get("loc", ())), "msg": e.get("msg")} for e in exc.errors()]
+        return JSONResponse({"detail": safe}, status_code=422)
+
+    app.state.accounts = accounts
+    app.state.trading = TradingService(accounts, store)
+    app.include_router(account_router(accounts, A, store))
+    app.include_router(trading_router(app.state.trading, A))
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
@@ -415,7 +485,9 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
 
     @app.get("/api/v1/monitor/status", dependencies=A)
     def monitor_status() -> dict[str, Any]:
-        return {"running": run_monitor, "subscriptions": monitor.status()}
+        return {"running": run_monitor, "subscriptions": monitor.status(),
+                "streams": streams.snapshot() if streams else [],
+                "streams_note": "WebSocket streams only wake the monitor early; analysis always uses validated REST bars."}
 
     @app.get("/api/v1/usage", dependencies=A)
     def usage() -> dict[str, Any]:

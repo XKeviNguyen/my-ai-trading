@@ -17,6 +17,15 @@ import type {
   ReportsResponse,
   UsageResponse,
   UserSettings,
+  ConnectionMeta,
+  ExchangesResponse,
+  AccountSnapshot,
+  PortfolioResponse,
+  PerformanceResponse,
+  OrderDraft,
+  TradePreview,
+  TradeResult,
+  JournalResponse,
   VisionResponse,
 } from "./types.js";
 
@@ -37,7 +46,12 @@ export type ErrorKind =
   | "upstream_error" // 502 (market data provider failed)
   | "validation" // 422 or client-side validation
   | "not_found" // 404
-  | "conflict" // 409 (e.g. rule_hash mismatch)
+  | "conflict" // 409 (e.g. rule_hash mismatch, trading refusal)
+  | "forbidden" // 403 (outside the account/trading policy)
+  | "expired" // 410 (exchange connection expired; its key was deleted)
+  | "exchange_auth" // 424 (the exchange rejected the API key)
+  | "not_supported" // 501
+  | "outcome_unknown" // 504 (an exchange request may or may not have taken effect)
   | "timeout"
   | "http"; // anything else
 
@@ -76,6 +90,16 @@ export function userMessage(kind: ErrorKind, detail: string, retryAfterS: number
       return "Not found" + (detail ? `: ${detail}` : ".");
     case "conflict":
       return "Conflict: " + (detail || "state changed; reload and review");
+    case "forbidden":
+      return "Not allowed: " + (detail || "this action is outside the app's account policy");
+    case "expired":
+      return detail || "This exchange connection expired; connect again.";
+    case "exchange_auth":
+      return "The exchange rejected the key" + (detail ? `: ${detail}` : ".");
+    case "not_supported":
+      return "Not supported" + (detail ? `: ${detail}` : ".");
+    case "outcome_unknown":
+      return "The exchange did not confirm the result. Check the order status; do not resend." + (detail ? ` (${detail})` : "");
     case "timeout":
       return "The local engine did not answer in time.";
     default:
@@ -135,8 +159,17 @@ function parseRetryAfter(value: string | null): number | null {
 function kindForStatus(status: number): ErrorKind {
   switch (status) {
     case 401:
-    case 403:
       return "unauthorized";
+    case 403:
+      return "forbidden";
+    case 410:
+      return "expired";
+    case 424:
+      return "exchange_auth";
+    case 501:
+      return "not_supported";
+    case 504:
+      return "outcome_unknown";
     case 404:
       return "not_found";
     case 409:
@@ -184,7 +217,7 @@ export class ApiClient {
     return url.toString();
   }
 
-  async request<T>(method: "GET" | "POST" | "PUT", path: string, opts: RequestOptions = {}): Promise<T> {
+  async request<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, opts: RequestOptions = {}): Promise<T> {
     const url = ApiClient.buildUrl(path, opts.query);
     const headers: Record<string, string> = { Accept: "application/json" };
     let token: string | null | undefined = null;
@@ -339,4 +372,67 @@ export class ApiClient {
     if (!/^[0-9a-f]{12}$/.test(id)) throw new ApiError("validation", 0, "invalid report id");
     return this.request("GET", `/api/v1/reports/${id}`, { query: { format: "markdown" }, text: true });
   }
+
+  // ---- exchange accounts (private routes) ----
+  async exchanges(): Promise<ExchangesResponse> {
+    return this.request("GET", "/api/v1/accounts/exchanges");
+  }
+  async connections(): Promise<{ connections: ConnectionMeta[] }> {
+    return this.request("GET", "/api/v1/accounts/connections");
+  }
+  /** Sends the key once. The response never contains it; the caller must clear its inputs. */
+  async connect(body: {
+    exchange: string; environment: "live" | "testnet"; lifetime: string; label: string;
+    api_key: string; api_secret: string; passphrase?: string;
+  }): Promise<{ connection: ConnectionMeta; note: string }> {
+    return this.request("POST", "/api/v1/accounts/connections", { json: body });
+  }
+  async disconnect(id: string): Promise<{ deleted: string; note: string }> {
+    return this.request("DELETE", `/api/v1/accounts/connections/${requireId(id)}`);
+  }
+  async snapshot(id: string, fresh = false): Promise<AccountSnapshot> {
+    return this.request("GET", `/api/v1/accounts/connections/${requireId(id)}/snapshot`, { query: { fresh } });
+  }
+  async portfolio(environment?: "live" | "testnet"): Promise<PortfolioResponse> {
+    return this.request("GET", "/api/v1/accounts/portfolio", { query: { environment } });
+  }
+  async performance(id: string, symbol: string, market: string): Promise<PerformanceResponse> {
+    return this.request("GET", `/api/v1/accounts/connections/${requireId(id)}/performance`, { query: { symbol, market } });
+  }
+
+  // ---- testnet trading ----
+  async tradingConsent(): Promise<{ consent_text: string }> {
+    return this.request("GET", "/api/v1/trading/consent");
+  }
+  async setTradingMode(id: string, enabled: boolean, consent: string | null): Promise<{ connection: ConnectionMeta }> {
+    return this.request("PUT", "/api/v1/trading/mode", { json: { connection_id: requireId(id), enabled, consent } });
+  }
+  async previewOrder(id: string, draft: OrderDraft): Promise<TradePreview> {
+    return this.request("POST", "/api/v1/trading/preview", { json: { connection_id: requireId(id), draft } });
+  }
+  async submitOrder(previewId: string, confirmToken: string): Promise<TradeResult> {
+    return this.request("POST", "/api/v1/trading/orders", { json: { preview_id: previewId, confirm_token: confirmToken } });
+  }
+  async journal(): Promise<JournalResponse> {
+    return this.request("GET", "/api/v1/trading/orders");
+  }
+  async reconcile(clientOrderId: string): Promise<TradeResult> {
+    return this.request("POST", `/api/v1/trading/orders/${requireOrderId(clientOrderId)}/reconcile`);
+  }
+  async cancelOrder(clientOrderId: string): Promise<TradeResult> {
+    return this.request("POST", `/api/v1/trading/orders/${requireOrderId(clientOrderId)}/cancel`, { json: { confirm: true } });
+  }
+}
+
+const CONN_ID_RE = /^[0-9a-f]{16}$/;
+const ORDER_ID_RE = /^mat[0-9a-f]{16}$/;
+
+function requireId(id: string): string {
+  if (!CONN_ID_RE.test(id)) throw new ApiError("validation", 0, "invalid connection id");
+  return id;
+}
+
+function requireOrderId(id: string): string {
+  if (!ORDER_ID_RE.test(id)) throw new ApiError("validation", 0, "invalid client order id");
+  return id;
 }

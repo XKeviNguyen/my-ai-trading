@@ -397,3 +397,180 @@ export interface UsageResponse {
   monthly_ai_budget_usd: number;
   note: string;
 }
+
+// ---- exchange accounts (R8) ----
+
+export type Provenance = "exchange_reported" | "derived" | "estimate";
+
+export interface KeyPermissions {
+  read: boolean | null;
+  spot_trade: boolean | null;
+  derivatives_trade: boolean | null;
+  margin_trade: boolean | null;
+  withdraw: boolean | null;
+  transfer: boolean | null;
+  ip_restricted: boolean | null;
+  expires_ms: number | null;
+}
+
+export interface ConnectionMeta {
+  connection_id: string;
+  exchange: string;
+  environment: "live" | "testnet";
+  label: string;
+  lifetime: string;
+  created_ms: number;
+  expires_ms: number | null;
+  key_hint: string;
+  permissions: KeyPermissions;
+  trading_enabled: boolean;
+}
+
+export interface ExchangeInfo {
+  id: string;
+  name: string;
+  kind: string;
+  environments: ("live" | "testnet")[];
+  needs_passphrase: boolean;
+  markets: string[];
+  key_setup_url: string;
+  oauth: string;
+  notes: string[];
+  key_label: string;
+  secret_label: string;
+}
+
+export interface ExchangesResponse {
+  exchanges: ExchangeInfo[];
+  lifetimes: string[];
+  default_lifetime: string;
+}
+
+export interface AccountOrder {
+  order_id: string;
+  client_order_id: string | null;
+  symbol: string;
+  market: string;
+  side: "buy" | "sell";
+  type: string;
+  status: string;
+  price: string | null;
+  quantity: string | null;
+  filled_quantity: string | null;
+  average_price: string | null;
+}
+
+export interface AccountSnapshot {
+  connection_id: string;
+  exchange: string;
+  environment: "live" | "testnet";
+  as_of_ms: number;
+  totals: { wallet: string; equity: string | null; available_balance: string | null; unrealized_pnl: string | null; maintenance_margin: string | null }[];
+  balances: { asset: string; wallet: string; free: string | null; locked: string | null; total: string | null }[];
+  positions: unknown[];
+  open_orders: AccountOrder[];
+  unavailable: string[];
+  warnings: string[];
+}
+
+export interface PortfolioPosition {
+  exchange: string;
+  symbol: string;
+  side: "long" | "short";
+  quantity: string;
+  notional_usd: string | null;
+  unrealized_pnl: string | null;
+  liquidation_distance_pct: string | null;
+  leverage: string | null;
+}
+
+export interface PortfolioResponse {
+  total_value_usd: { value: string; provenance: Provenance; note: string };
+  by_exchange: Record<string, string>;
+  by_wallet: Record<string, string>;
+  allocation: { asset: string; exposure_usd: string; share_pct: string | null }[];
+  exposure_by_direction: { long: string; short: string };
+  net_exposure_usd: string;
+  positions: PortfolioPosition[];
+  margin: { exchange: string; wallet: string; maintenance_margin_pct_of_equity: string }[];
+  unpriced_assets: string[];
+  warnings: string[];
+  connections: { connection_id: string; exchange: string; environment: string; as_of_ms: number; unavailable: string[] }[];
+  errors: { connection_id: string; exchange: string; error: string }[];
+  environment: "live" | "testnet";
+  available_environments: ("live" | "testnet")[];
+}
+
+export interface PerformanceResponse {
+  symbol: string;
+  market: string;
+  trades: number;
+  win_rate_pct?: string;
+  net_pnl?: string;
+  average_win?: string | null;
+  average_loss?: string | null;
+  expectancy_per_trade?: string;
+  profit_factor?: string | null;
+  max_drawdown?: string;
+  fees_paid?: string;
+  fills_with_fees_in_other_assets?: number;
+  unmatched_sells?: number;
+  provenance?: string[];
+  warning?: string;
+  note?: string;
+}
+
+export interface OrderDraft {
+  symbol: string;
+  market: "spot" | "usdm_perpetual" | "stock";
+  side: "buy" | "sell";
+  type: "market" | "limit";
+  quantity: string;
+  price?: string;
+  reduce_only?: boolean;
+}
+
+export interface TradeEstimate {
+  value: string | null;
+  asset?: string;
+  provenance: Provenance;
+  note?: string;
+  rate?: string;
+  leverage?: string;
+}
+
+export interface TradePreview {
+  preview_id: string;
+  confirm_token: string;
+  connection_id: string;
+  exchange: string;
+  environment: "testnet";
+  order: Record<string, string | boolean | null>;
+  checks: { name: string; ok: boolean; detail: string }[];
+  estimates: Record<string, TradeEstimate | Record<string, string>>;
+  warnings: string[];
+  expires_in_s: number;
+}
+
+export interface TradeResult {
+  client_order_id: string;
+  state: string;
+  order?: AccountOrder;
+  note?: string;
+}
+
+export interface JournalRow {
+  client_order_id: string;
+  connection_id: string;
+  exchange: string;
+  environment: string;
+  state: string;
+  message: string | null;
+  request_json: string;
+  created_at: number;
+}
+
+export interface JournalResponse {
+  orders: JournalRow[];
+  needs_reconcile: string[];
+}

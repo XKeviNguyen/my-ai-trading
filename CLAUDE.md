@@ -5,7 +5,7 @@ This repository has **one canonical, tool-neutral engineering policy**: [`AGENTS
 ## Priority and project scope
 
 - Product owner controls external publishing, pushes, merges, deployment, real accounts, spending, production changes and credentials. Work **locally in Ubuntu / VS Code**; do not change user's global Claude/Codex settings or install new skills/dependencies without permission.
-- Python-first, research/read-only, no exchange order placement or private trading APIs. Correctness and security first, then simplicity, maintainability, performance and cost. Evidence, not a plausible narrative, determines PASS.
+- Python-first. Public research needs no account. Private exchange access (read-only live keys) and testnet-only Trading Mode follow `AGENTS.md` §2 (R8); no live-money orders, withdrawals, transfers or autonomous trading. Correctness and security first, then simplicity, maintainability, performance and cost. Evidence, not a plausible narrative, determines PASS.
 - Current repository starter is documentation-only. A distinct Python V0.1 ZIP exists; never claim it has been imported, tested in this repository, or connected to live Binance unless verified.
 - Use six Breakers selectively; reviewers/breakers are **read-only**. Model how market-data timestamps, closed bars, provider failures, duplicate events, user custom prompts and API spending interact. No untrusted prompt execution.
 - Avoid inventing code, financial results, risk estimates or tests. Protect truthful git/AI authorship.

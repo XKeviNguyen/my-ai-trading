@@ -30,6 +30,9 @@ PATH_RE = re.compile(r"^/api/v1(?:/[A-Za-z0-9_-]+)*$")
 RULE_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 STRATEGY_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 REPORT_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+CONN_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+ORDER_ID_RE = re.compile(r"^mat[0-9a-f]{16}$")
+PREVIEW_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 DEFAULT_TIMEOUT_S = 30.0
 LLM_TIMEOUT_S = 180.0
 HEALTH_TIMEOUT_S = 5.0
@@ -119,6 +122,46 @@ class ConflictError(ApiError):
         return "Conflict: " + (self.detail or "state changed; reload and review")
 
 
+class ForbiddenError(ApiError):
+    """403: outside the app's account/trading policy (never a token problem)."""
+    kind = "forbidden"
+
+    def user_message(self) -> str:
+        return "Not allowed: " + (self.detail or "this action is outside the app's account policy")
+
+
+class ExpiredError(ApiError):
+    """410: the exchange connection expired and its key was deleted."""
+    kind = "expired"
+
+    def user_message(self) -> str:
+        return self.detail or "This exchange connection expired; connect again."
+
+
+class ExchangeAuthError(ApiError):
+    """424: the exchange rejected the exchange API key (not the local engine token)."""
+    kind = "exchange_auth"
+
+    def user_message(self) -> str:
+        return "The exchange rejected the key" + (f": {self.detail}" if self.detail else ".")
+
+
+class NotSupportedError(ApiError):
+    kind = "not_supported"
+
+    def user_message(self) -> str:
+        return "Not supported" + (f": {self.detail}" if self.detail else ".")
+
+
+class OutcomeUnknownError(ApiError):
+    """504: an exchange request may or may not have taken effect."""
+    kind = "outcome_unknown"
+
+    def user_message(self) -> str:
+        return ("The exchange did not confirm the result. Check the order status; do not resend."
+                + (f" ({self.detail})" if self.detail else ""))
+
+
 class ApiTimeoutError(ApiError):
     kind = "timeout"
 
@@ -141,9 +184,10 @@ class InternalError(ApiError):
 
 
 _STATUS_ERRORS: dict[int, type[ApiError]] = {
-    400: ValidationError, 401: UnauthorizedError, 403: UnauthorizedError, 404: NotFoundError,
-    409: ConflictError, 421: EngineUnavailableError, 422: ValidationError, 429: RateLimitedError,
-    502: UpstreamError, 503: UpstreamUnavailableError,
+    400: ValidationError, 401: UnauthorizedError, 403: ForbiddenError, 404: NotFoundError,
+    409: ConflictError, 410: ExpiredError, 421: EngineUnavailableError, 422: ValidationError,
+    424: ExchangeAuthError, 429: RateLimitedError, 501: NotSupportedError, 502: UpstreamError,
+    503: UpstreamUnavailableError, 504: OutcomeUnknownError,
 }
 
 
@@ -218,6 +262,18 @@ def require_symbol(symbol: str, market: str) -> None:
         raise ValidationError(0, "symbol must match ^[A-Z0-9]{3,20}$")
     if market not in MARKETS:
         raise ValidationError(0, "market must be usdm_perpetual or spot")
+
+
+def require_connection_id(cid: str) -> str:
+    if not isinstance(cid, str) or not CONN_ID_RE.fullmatch(cid):
+        raise ValidationError(0, "invalid connection id")
+    return cid
+
+
+def require_order_id(coid: str) -> str:
+    if not isinstance(coid, str) or not ORDER_ID_RE.fullmatch(coid):
+        raise ValidationError(0, "invalid client order id")
+    return coid
 
 
 def encode_multipart(fields: dict[str, str], file_field: str, filename: str, content_type: str,
@@ -447,3 +503,77 @@ class ApiClient:
         if not REPORT_ID_RE.fullmatch(report_id or ""):
             raise ValidationError(0, "invalid report id")
         return self.request_text(f"/api/v1/reports/{report_id}", query={"format": "markdown"})
+
+    # ---- exchange accounts (private, read-only) ----
+    def exchanges(self) -> dict[str, Any]:
+        return self.request("GET", "/api/v1/accounts/exchanges")
+
+    def connections(self) -> dict[str, Any]:
+        return self.request("GET", "/api/v1/accounts/connections")
+
+    def connect(self, *, exchange: str, environment: str, lifetime: str, label: str, api_key: str,
+                api_secret: str, passphrase: str | None = None) -> dict[str, Any]:
+        """Send exchange credentials once. They are not kept by the client and are redacted from errors."""
+        body: dict[str, Any] = {"exchange": exchange, "environment": environment, "lifetime": lifetime,
+                                "label": label, "api_key": api_key, "api_secret": api_secret}
+        if passphrase is not None:
+            body["passphrase"] = passphrase
+        try:
+            return self.request("POST", "/api/v1/accounts/connections", json_body=body)
+        except ApiError as exc:
+            detail = exc.detail
+            for secret in (api_key, api_secret, passphrase):
+                if secret and len(secret) >= 4:
+                    detail = detail.replace(secret, "[redacted]")
+            if detail == exc.detail:
+                raise
+            raise type(exc)(exc.status, detail, exc.retry_after_s) from None
+        finally:
+            body.clear()
+
+    def disconnect(self, connection_id: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/api/v1/accounts/connections/{require_connection_id(connection_id)}")
+
+    def snapshot(self, connection_id: str, fresh: bool = False) -> dict[str, Any]:
+        return self.request("GET", f"/api/v1/accounts/connections/{require_connection_id(connection_id)}/snapshot",
+                            query={"fresh": fresh})
+
+    def portfolio(self, environment: str | None = None) -> dict[str, Any]:
+        if environment not in (None, "live", "testnet"):
+            raise ValueError("environment must be live or testnet")
+        return self.request("GET", "/api/v1/accounts/portfolio", query={"environment": environment} if environment else None)
+
+    def performance(self, connection_id: str, symbol: str, market: str) -> dict[str, Any]:
+        require_symbol(symbol, market)
+        return self.request("GET",
+                            f"/api/v1/accounts/connections/{require_connection_id(connection_id)}/performance",
+                            query={"symbol": symbol, "market": market})
+
+    # ---- testnet trading ----
+    def trading_consent(self) -> dict[str, Any]:
+        return self.request("GET", "/api/v1/trading/consent")
+
+    def set_trading_mode(self, connection_id: str, enabled: bool, consent: str | None) -> dict[str, Any]:
+        return self.request("PUT", "/api/v1/trading/mode",
+                            json_body={"connection_id": require_connection_id(connection_id),
+                                       "enabled": bool(enabled), "consent": consent})
+
+    def preview_order(self, connection_id: str, draft: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", "/api/v1/trading/preview",
+                            json_body={"connection_id": require_connection_id(connection_id), "draft": draft})
+
+    def submit_order(self, preview_id: str, confirm_token: str) -> dict[str, Any]:
+        if not isinstance(preview_id, str) or not PREVIEW_ID_RE.fullmatch(preview_id):
+            raise ValidationError(0, "invalid preview id")
+        return self.request("POST", "/api/v1/trading/orders",
+                            json_body={"preview_id": preview_id, "confirm_token": confirm_token})
+
+    def journal(self) -> dict[str, Any]:
+        return self.request("GET", "/api/v1/trading/orders")
+
+    def reconcile(self, client_order_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/api/v1/trading/orders/{require_order_id(client_order_id)}/reconcile")
+
+    def cancel_order(self, client_order_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/api/v1/trading/orders/{require_order_id(client_order_id)}/cancel",
+                            json_body={"confirm": True})

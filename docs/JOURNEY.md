@@ -14,7 +14,8 @@ For the current feature status, see the [README](../README.md) and [PROGRESS.md]
 | 2026-10-26 | Local chart-screenshot analysis with OpenCV and OCR; README rewritten for readers | `993b7d7` |
 | 2026-10-27 | MACD, Bollinger Bands, ADX, chart patterns, monthly timeframe, ML lab, saved reports, AI answer cache, desktop app | `8bedde8`, PR #2 |
 | 2026-10-27 | Four code review findings on PR #2 fixed, each with a regression test | `2c9c49c` |
-| 2026-10-27 | Neon night design system for the Chrome side panel and the desktop app | `feature/ui-polish` |
+| 2026-10-27 | Neon night design system for the Chrome side panel and the desktop app | PR #3 |
+| 2026-10-27 | Exchange accounts and testnet Trading Mode (R8): Binance, Bybit, OKX, Interactive Brokers paper | `feature/accounts-trading` |
 
 ## Starting point
 
@@ -176,6 +177,79 @@ The side panel worked but read like a plain form. Every timeframe repeated a nin
 
 **Legibility was measured, not judged by eye.** Every text color was checked against every background it appears on, and all of them meet WCAG AA (at least 4.5:1). The lowest is 5.23. A desktop test keeps it that way.
 
+## Phase 6: exchange accounts and testnet trading (R8)
+
+Until R8, the product never touched an exchange account. We changed that on purpose, in small, explicit steps.
+
+### The boundary came first
+
+Before any code, we changed the policy (`AGENTS.md`, the PRD, `SECURITY.md`) and reviewed the diff on its own:
+
+- Live accounts are read-only.
+- Orders go only to official testnets and demo accounts, after a preview and an explicit per-order confirmation.
+- Withdrawals, transfers and automatic trading stay out of scope.
+- Credentials live only in memory or the operating system's credential vault, with an expiry the user chooses.
+
+The rest of the work implements that boundary and tests it.
+
+### What we built
+
+- **Credential lifecycle:** session-only by default. Optional lifetimes of 1 h to 30 days, or until removed, use the OS vault.
+- **Exchange adapters:** Binance (spot and USD-M futures), Bybit V5, OKX V5, and Interactive Brokers paper accounts through IBKR's own local gateway. All four sit behind one adapter interface.
+- **Trading service:** preview against exchange rules, a single-use confirmation that expires after 60 s, a journal row written before every send, and reconciliation of unknown outcomes.
+- **Portfolio and trade analytics:** exact decimal math, and every figure labeled as reported, derived or estimated.
+- **UI:** an Accounts tab in the side panel and the desktop app.
+- **Streams:** Binance kline streams that wake the monitor when a bar closes.
+
+### Problems and how we solved them
+
+**An unknown permission must not mean "off".** We first read Binance key permissions with `bool(...)`, so a missing field became "not allowed". If Binance ever renamed a field, a key that can trade would have passed as read-only. Every flag is now True, False or unknown, and a live key with any unknown write permission is refused.
+
+**Several exchange facts we would have gotten wrong from memory.** We checked every endpoint against the official docs or the official SDK types, and that caught:
+
+- Binance's symbol config reports margin mode as `CROSSED`, not `cross`.
+- Binance's V3 position endpoint no longer reports leverage.
+- Binance retired the legacy futures WebSocket URLs on 2026-04-23, so kline streams must use `/market`.
+- Binance documents HTTP 408 and error -1006 as "execution status unknown", not as rejections.
+- OKX demo trading uses the live host plus a header.
+- OKX swap sizes are in contracts, not coins.
+- IBKR has no way to confirm that a live session cannot trade, so live IBKR is unsupported.
+
+**"Not found" is not "never sent".** Right after a timeout, an exchange can briefly report an order as missing even though it was accepted. We used to mark it NOT_FOUND on the first lookup. An order now stays UNKNOWN until it has been missing for at least three lookups spread over a minute. Orders are never resent automatically, and a final state such as FILLED or CANCELED is never downgraded when an exchange purges old orders.
+
+**One number must never mix two kinds of money.** An independent review found that the portfolio added live and testnet balances together. The portfolio now shows one environment at a time, and prices come from the same exchange and environment as the balance.
+
+**Fees are money too.** The trade analytics first dropped entry fees, mixed fees paid in BNB into USDT results, and invented short trades for spot sells whose buy was older than the loaded history. All three are fixed, and each has a test with hand-computed values.
+
+**Expired secrets must not be stranded.** If the OS vault is locked when an expired key should be deleted, we used to drop the metadata anyway, leaving the secret in the vault with nothing pointing to it. The metadata is now kept, marked "pending delete", and retried on the next start.
+
+**Secrets can leak through error messages.** FastAPI's default 422 response echoes the submitted value, and the field path could echo a key pasted as a JSON field name. Both are scrubbed now. Credentials must be printable ASCII, because a non-ASCII character used to crash the HTTP layer with part of the key in the log.
+
+**Parallel work, one integration gate.** We built the Bybit, OKX, Interactive Brokers and desktop parts in parallel, in isolated worktrees with strict file ownership. We integrated them one at a time, reran every suite after each, and kept only the files each part owned. Independent read-only security and data reviews then found 4 high and 8 medium issues, none critical. We fixed them all with regression tests, except two that we documented as known limits: UI-enforced per-order confirmation, and market-order size rules.
+
+### OCR accuracy, measured honestly
+
+We asked for 99% accuracy on chart price-axis labels, and made the claim testable first. A seeded generator renders chart-like images with dark and light themes, Hershey and real TrueType fonts, prices from 0.00008 to 1,700,000 with thousands separators, gridlines, price tags, JPEG compression, noise and HiDPI scales. Tuning used one seed range only; the reported number comes from a separate held-out range that was never tuned on.
+
+| Held-out (400 images, 2,970 labels) | Before | After |
+|---|---|---|
+| Exact-match accuracy | 83.06% | 99.53% |
+| Precision | 94.12% | 99.93% |
+| Images fully correct | 231 | 391 |
+
+The gains came from four changes:
+
+- finding the label column by chroma instead of saturation
+- reading each row separately, upscaled, with a numeric whitelist and a vote between readings
+- checking that labels sit on one evenly spaced scale
+- re-reading only the rows that break that scale
+
+Readings that break the scale are reported as outliers, never silently "corrected". A monospace font with dotted zeros is still a weak spot (87.7%), and the benchmark does not prove anything about real exchange screenshots. Both are written down in [OCR_BENCHMARK.md](OCR_BENCHMARK.md).
+
+### Not verified yet
+
+No adapter has run against a real testnet from this repository. That needs the owner's testnet keys, entered in the app. The desktop app has been tested offscreen only.
+
 ## Lessons we keep
 
 1. **Count closed bars at every layer.** Most of our data bugs came from the boundary between forming and closed candles.
@@ -187,10 +261,13 @@ The side panel worked but read like a plain form. Every timeframe repeated a nin
 7. **Be honest in the product.** Mark experimental features as experimental, label hypothetical results as hypothetical, and say when a detector also fires on noise.
 8. **Every check needs a positive control.** A check that has never failed may be broken. Make it fail on purpose once.
 9. **Look at the real thing.** Screenshots of the real panel found layout bugs that every unit test had passed.
+10. **Unknown is not "no".** A missing permission flag, a "not found" order and a 3xx response all mean "we do not know yet". Treat them as unknown and fail closed.
+11. **Check exchange facts against the docs, every time.** APIs change: hosts move, fields disappear, codes gain meanings.
 
 ## What's next
 
 - **UI polish follow-ups:** the comparison table in the desktop app (it still uses one card per timeframe), and a real-display check of the desktop app.
+- **R8 follow-ups:** a first run on each exchange's testnet with real testnet keys, market-order size rules, hedge-mode positions, and partner approval for one-click exchange sign-in.
 - **Blocked on external inputs:**
   - live AI features, which need an API key and a budget
   - stock data, which needs a licensed provider

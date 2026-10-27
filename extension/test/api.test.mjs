@@ -167,3 +167,55 @@ test("report markdown is returned as text; report ids and symbols are validated"
   const err = client(() => json(404, { detail: "report not found" }));
   await assert.rejects(err.c.reportMarkdown("0123456789ab"), (e) => e instanceof ApiError && e.status === 404);
 });
+
+test("account and trading statuses map to their own kinds; 403 is a policy refusal, not a token problem", async () => {
+  const cases = [
+    [403, "live keys must be read-only", "forbidden", /Not allowed: live keys must be read-only/],
+    [410, "this connection expired and its stored key was deleted", "expired", /expired/],
+    [424, "Binance rejected the key (code -2015)", "exchange_auth", /exchange rejected the key/],
+    [501, "order history is not implemented", "not_supported", /Not supported/],
+    [504, "exchange did not answer in time", "outcome_unknown", /do not resend/],
+  ];
+  for (const [status, detail, kind, message] of cases) {
+    const { c } = client(() => json(status, { detail }));
+    await assert.rejects(c.connections(), (e) => {
+      assert.equal(e.kind, kind, `status ${status}`);
+      assert.match(e.message, message);
+      assert.doesNotMatch(e.message, /my-ai-trading token/);
+      return true;
+    });
+  }
+});
+
+test("disconnect uses DELETE on a validated id; bad ids never reach the network", async () => {
+  const { c, calls } = client(() => json(200, { deleted: "0123456789abcdef", note: "deleted locally" }));
+  await c.disconnect("0123456789abcdef");
+  assert.equal(calls[0].init.method, "DELETE");
+  assert.equal(calls[0].url, `${API_BASE}/api/v1/accounts/connections/0123456789abcdef`);
+  for (const bad of ["../settings", "0123456789ABCDEF", "x".repeat(16), ""]) {
+    await assert.rejects(c.disconnect(bad), (e) => e.kind === "validation");
+    await assert.rejects(c.snapshot(bad), (e) => e.kind === "validation");
+  }
+  for (const bad of ["mat123", "abc0123456789abcdef", "mat0123456789abcdeg"]) {
+    await assert.rejects(c.cancelOrder(bad), (e) => e.kind === "validation");
+  }
+  assert.equal(calls.length, 1);
+});
+
+test("the API secret is sent once in the body and never appears in error text", async () => {
+  const secret = "very-secret-value-0123456789";
+  const { c, calls } = client(() => json(422, { detail: [{ loc: ["body", "api_secret"], msg: "too long", type: "x" }] }));
+  await assert.rejects(c.connect({ exchange: "binance", environment: "testnet", lifetime: "session", label: "",
+                                   api_key: "k".repeat(16), api_secret: secret }), (e) => {
+    assert.doesNotMatch(e.message, new RegExp(secret));
+    return true;
+  });
+  assert.equal(JSON.parse(calls[0].init.body).api_secret, secret);
+  assert.doesNotMatch(calls[0].url, new RegExp(secret));
+});
+
+test("cancelling a testnet order always sends explicit confirmation", async () => {
+  const { c, calls } = client(() => json(200, { client_order_id: "mat0123456789abcdef", state: "CANCELED" }));
+  await c.cancelOrder("mat0123456789abcdef");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { confirm: true });
+});

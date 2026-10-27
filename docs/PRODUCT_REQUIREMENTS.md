@@ -25,7 +25,7 @@ The differentiator is not an AI chatbot that merely describes screenshots. It is
 4. **Timeframe-aware research:** Support configurable 1H/4H/1D/1W (and permitted additional intervals) as market context, but evaluate each selected methodology only on timeframes and asset classes justified by its evidence and declared capabilities. Do not impose hourly decisions on long-horizon strategies.
 5. **Evidence and reproducibility:** Attach observable data, timestamps, timeframe, price levels, pattern criteria, missing data, uncertainty, and invalidation conditions to each insight.
 6. **Cost discipline:** Make most frequent computations zero-LLM-token operations; measure actual per-user/per-feature/provider inference spend; enforce budgets, fallbacks, and deduplication.
-7. **Security first:** Read-only market access in initial releases; no exchange trade permissions, credential leaks, arbitrary prompt-to-code execution, unauthorized deployment, or automated order execution.
+7. **Security first:** Public analysis without any account. From R8, opt-in exchange accounts with read-only live keys and a testnet-only Trading Mode (see `AGENTS.md` §2); no live-money orders, withdrawals, credential leaks, arbitrary prompt-to-code execution, unauthorized deployment, or automated order execution.
 8. **Measured quality:** Evaluate rules and models through reproducible fixtures, historical replay, and out-of-sample analysis; quantify false alarms, latency, and cost rather than promising wins.
 
 **North-star quality indicators:** useful validated insights per active user; false-alert rate; analysis correctness against labeled cases; median alert delay after a qualified event; copilot response usefulness; cost per valid insight; operational uptime and data freshness. These require measured baselines before setting production SLOs.
@@ -299,7 +299,7 @@ Provider Adapters      Typed Rule Compiler + Approval
 
 ## 7. Security, Privacy, and Engineering Doctrine (NON-NEGOTIABLE)
 
-- **Read-only first:** Public market data only. Do not request trading API keys, private account endpoints, order permissions or automated execution features in the initial releases.
+- **Read-only first, then bounded accounts (R8):** Through R7, public market data only. From R8, private account data uses read-only live API keys (keys with trade, withdrawal or transfer rights are rejected); orders go only to official testnet/demo environments after a preview and an explicit per-order confirmation. Live-money orders, withdrawals, transfers and automated execution stay out of scope until the owner approves them in writing in `AGENTS.md`.
 - **No secrets in Git:** `.env`, `.env.*`, private keys, access tokens, provider keys, production logs or user positions never belong in commits, prompts, screenshots or CI output. Commit sanitized `.env.example` only. Use `.gitignore` **and** reviewed Git hooks, staging/history secret checks, independent secret scanning and available GitHub push protection. These controls complement rather than replace each other.
 - **No arbitrary code execution:** Prompts and LLM outputs are untrusted data; the custom-rule compiler outputs validated typed AST/DSL only. No `eval`, unrestricted Python, shell, SQL, or model-issued execution permissions.
 - **Least privilege:** Restrict extension permissions, local API binding and cross-origin access; verify authentication/authorization and strict tenant isolation when accounts are introduced.
@@ -322,8 +322,9 @@ Provider Adapters      Typed Rule Compiler + Approval
 | **R5 — User-facing client** | Browser extension (or approved native alternative), watchlists, alerts and cost dashboard | Usability/accessibility, safe browser permissions, no unapproved trading operations |
 | **R6 — ML & research lab** | scikit-learn/LightGBM research, reproducible backtesting, calibration and walk-forward metrics | Verified no-leakage tests, realistic cost assumptions, no unearned profitability claims |
 | **R7 — Optional local/fine-tuned AI** | PyTorch + Transformers + PEFT/LoRA/QLoRA pilots; self-host vs API comparison | Better validated quality or unit economics and acceptable security/ops footprint |
+| **R8 — Exchange accounts + testnet trading** | Normalized adapters (Binance, Bybit, OKX; Interactive Brokers paper if feasible), read-only account sync, portfolio analytics, credential lifecycle in the OS vault, testnet-only Trading Mode with preview/confirm/reconcile | Live keys with trade/withdraw rights rejected; expired credentials never used; no order without per-order confirmation; unknown order states reconciled, never blindly retried; OAuth flows marked BLOCKED BY PROVIDER APPROVAL until approved |
 
-**Out of scope for initial releases:** Automated live trading, copy-trading, portfolio management via private exchange credentials, guaranteed profit prediction, unlicensed market-data redistribution, proprietary-strategy replication, always-on GPU inference, 20 simultaneous reasoning agents, and premature cloud microservices.
+**Out of scope:** Automated or live-money trading, withdrawals and transfers, copy-trading, guaranteed profit prediction, unlicensed market-data redistribution, proprietary-strategy replication, always-on GPU inference, 20 simultaneous reasoning agents, and premature cloud microservices.
 
 ## 9. Acceptance Scenarios (Agent-Readable)
 

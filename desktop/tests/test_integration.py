@@ -46,8 +46,8 @@ def select_methodologies(port, token, selections):
 
 def test_tabs_and_accessibility_basics(window):
     assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == \
-        ["Analysis", "Copilot", "Strategy Studio", "Alerts", "Reports", "Methods", "Usage", "Settings"]
-    assert len(TAB_ORDER) == 8
+        ["Analysis", "Copilot", "Strategy Studio", "Accounts", "Alerts", "Reports", "Methods", "Usage", "Settings"]
+    assert len(TAB_ORDER) == 9
     assert window.symbol_edit.accessibleName() == "Symbol"
     assert window.tf_combo.findData("1M") >= 0
     assert window.minimumWidth() <= 360

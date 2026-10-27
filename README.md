@@ -5,7 +5,7 @@
 Your market data. Your strategy. Your decision.
 
 > [!IMPORTANT]
-> **Early development (v0.2), research only.** My AI Trading never places orders, never asks for exchange API keys, and is not financial advice. Nothing here promises profit.
+> **Early development, research first.** Market analysis needs no account. Connecting an exchange is optional: live accounts are read-only, and orders can only be sent to exchange testnets after you confirm each one. This is not financial advice, and nothing here promises profit.
 
 ---
 
@@ -75,7 +75,7 @@ This is the product roadmap with an honest status for each item.
 | Feature | Status | What you get today |
 |---|---|---|
 | Interactive copilot | 🧪 | Ask about the current symbol. Facts always come from the engine. An optional AI model adds clearly labeled interpretation when you supply your own API key. |
-| Chart screenshots and deep reasoning | 🧪 | Local screenshot analysis with OpenCV and OCR: candle colors, labels, and price-axis text, all checked against exchange data. Optional AI vision and in-depth analysis. |
+| Chart screenshots and deep reasoning | 🧪 | Local screenshot analysis with OpenCV and OCR: candle colors, labels, and price-axis text, all checked against exchange data. Price-axis OCR reads 99.5% of labels exactly on a held-out synthetic benchmark ([method and limits](docs/OCR_BENCHMARK.md)); real screenshots are not benchmarked yet. Optional AI vision and in-depth analysis. |
 | 20 trader-inspired profiles | 🧪 | All 20 are listed with their documented timeframes and data needs. Seven have experimental rule checks: Minervini (price criteria), Weinstein, the Turtles, Darvas, Larry Williams, Linda Raschke, and Peter Brandt (classical patterns). The rest need data the app doesn't have yet (fundamentals, macro, news) or have no published rules. |
 | Custom Strategy Studio | ✅ | Describe a rule in plain English. Preview it, dry-run it on past candles, and turn it on only after approving that exact version. You can switch off every preset. |
 | Challenge My Thesis | ✅ | Lays out the evidence for and against your idea, your hidden assumptions, the unknowns, and the price levels that would prove you wrong. |
@@ -88,6 +88,18 @@ This is the product roadmap with an honest status for each item.
 | ML signal research | 🧪 | Leak-free datasets, walk-forward folds with a purge gap, and logistic regression and LightGBM compared against simple baselines, with calibration and leakage checks. Install with `pip install -e '.[ml]'`. |
 | Backtesting lab | ✅ | Next-bar fills, fees, slippage, perpetual funding, ATR stops, and walk-forward folds. Results are always labeled hypothetical. |
 | AI cost control | 🧪 | Engine first, AI only when useful. Monthly token and dollar budgets, a usage dashboard, and consent before any data leaves your machine. Self-hosted or fine-tuned models are planned. |
+
+### Exchange accounts (testnet trading)
+
+| Feature | Status | What you get today |
+|---|---|---|
+| Exchange connections | 🧪 | Binance, Bybit and OKX through API keys, and Interactive Brokers paper accounts through IBKR's own gateway. Live accounts must use read-only keys: keys that can trade, withdraw or transfer are refused. Keys stay in memory or your operating system's credential vault, with an expiry you choose (default: this session only). |
+| Portfolio and positions | 🧪 | Balances, positions, open orders, exposure by asset and direction, margin use, distance to liquidation, and risk warnings with your own thresholds. Every number says whether the exchange reported it or the app calculated or estimated it. |
+| Testnet Trading Mode | 🧪 | Off by default. Orders go only to testnet or demo accounts, after a preview against the exchange's rules and your explicit confirmation. Orders whose outcome is unknown are looked up, never resent. The AI can never place an order. |
+| Performance from fills | 🧪 | Win rate, expectancy, profit factor, drawdown and fees from your executed trades. |
+| One-click exchange sign-in (OAuth) | 🗓️ | Needs partner approval from each exchange (**blocked by provider approval**). |
+
+Details and the safety rules: [docs/ACCOUNTS_TRADING.md](docs/ACCOUNTS_TRADING.md).
 
 ### Platform
 
@@ -126,7 +138,7 @@ Install the AI extra with `.venv/bin/pip install -e '.[ai]'`. The SDK reads its 
 
 ## Safety and privacy
 
-- **Read-only.** No order placement, no exchange credentials, no leverage, no auto-trading.
+- **Read-only by default.** Analysis needs no account. Live exchange connections are read-only; testnet orders need Trading Mode plus your confirmation for each order. No auto-trading, withdrawals or transfers.
 - **Local-first.** The engine listens only on `127.0.0.1` and requires a private token. Screenshots are processed in memory and never stored.
 - **Your data stays yours.** Nothing is sent to an AI provider unless you turn on consent and configure a key.
 - **No impersonation.** Trader profiles are research summaries of publicly described methods. They aren't endorsed by those traders and don't claim what anyone would personally do.

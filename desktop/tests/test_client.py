@@ -116,7 +116,7 @@ def test_missing_or_malformed_token_never_hits_the_network(server):
 
 
 @pytest.mark.parametrize("status,cls", [
-    (400, C.ValidationError), (401, C.UnauthorizedError), (403, C.UnauthorizedError), (404, C.NotFoundError),
+    (400, C.ValidationError), (401, C.UnauthorizedError), (403, C.ForbiddenError), (404, C.NotFoundError),
     (409, C.ConflictError), (421, C.EngineUnavailableError), (422, C.ValidationError), (429, C.RateLimitedError),
     (500, C.ApiError), (502, C.UpstreamError), (503, C.UpstreamUnavailableError),
 ])

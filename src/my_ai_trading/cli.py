@@ -29,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("serve", help="run the local API on 127.0.0.1 (for the browser extension)")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--no-monitor", action="store_true", help="do not run the background monitor")
+    s.add_argument("--no-streams", action="store_true",
+                   help="do not use Binance kline WebSocket streams to wake the monitor (REST schedule only)")
     s.add_argument("--db", default=None)
     s.add_argument("--docs", action="store_true", help="enable /docs (loads Swagger UI scripts from a CDN)")
     sub.add_parser("token", help="print the path of the local API token file (not the token)")
@@ -82,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         from .api import create_app
         if not 1024 <= args.port <= 65535:
             p.error("port must be 1024..65535")
-        app = create_app(service=service, store=store, port=args.port, run_monitor=not args.no_monitor,
+        app = create_app(service=service, store=store, port=args.port, run_monitor=not args.no_monitor, run_streams=not args.no_streams,
                          enable_docs=args.docs)
         uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")  # never 0.0.0.0
         return 0

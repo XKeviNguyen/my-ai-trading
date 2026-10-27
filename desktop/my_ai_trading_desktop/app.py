@@ -14,6 +14,7 @@ from . import __version__, theme
 from . import formatting as F
 from .client import DEFAULT_PORT, MARKETS, TIMEFRAMES
 from .context import AppContext
+from .views.accounts import AccountsView
 from .views.alerts import AlertsView
 from .views.analysis import AnalysisView
 from .views.copilot import CopilotView
@@ -24,8 +25,9 @@ from .views.studio import StudioView
 from .views.usage import UsageView
 from .widgets import buddy_label, status_label
 
-TAB_ORDER = ("analysis", "copilot", "studio", "alerts", "reports", "methods", "usage", "settings")
-TAB_TITLES = {"analysis": "Analysis", "copilot": "Copilot", "studio": "Strategy Studio", "alerts": "Alerts",
+TAB_ORDER = ("analysis", "copilot", "studio", "accounts", "alerts", "reports", "methods", "usage", "settings")
+TAB_TITLES = {"analysis": "Analysis", "copilot": "Copilot", "studio": "Strategy Studio", "accounts": "Accounts",
+              "alerts": "Alerts",
               "reports": "Reports", "methods": "Methods", "usage": "Usage", "settings": "Settings"}
 
 
@@ -60,6 +62,7 @@ class MainWindow(QMainWindow):
             "analysis": AnalysisView(self.ctx),
             "copilot": CopilotView(self.ctx),
             "studio": StudioView(self.ctx),
+            "accounts": AccountsView(self.ctx),
             "alerts": AlertsView(self.ctx, notify=self.notify, tray_available=self.tray is not None),
             "reports": ReportsView(self.ctx),
             "methods": MethodsView(self.ctx),

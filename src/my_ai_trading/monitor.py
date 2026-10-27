@@ -57,6 +57,15 @@ class Monitor:
     instruments: dict[str, InstrumentIdentity] = field(default_factory=dict)
 
     unresolved: dict[str, tuple[int, str]] = field(default_factory=dict)  # watch key -> (retry_at_ms, error)
+    on_subscriptions: Callable[[set[tuple[str, str, str]]], None] | None = None  # e.g. KlineStreams.set_subscriptions
+    _wake: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def wake(self, symbol: str, market: str, timeframe: str, bar_open_ms: int) -> None:
+        """A stream saw this bar close: make the subscription due now. Data still comes from REST in tick()."""
+        for (key, tf), st in self.state.items():
+            if tf == timeframe and key.endswith(f":{market}:{symbol}") and st.failures == 0:
+                st.next_due_ms = 0  # never cut short a backoff (e.g. after HTTP 429: an early retry risks an IP ban)
+                self._wake.set()
 
     def subscriptions(self, now_ms: int | None = None) -> list[tuple[InstrumentIdentity, str]]:
         """Watchlist x needed timeframes. A symbol that fails to resolve is skipped (with backoff),
@@ -94,10 +103,12 @@ class Monitor:
                 await self.tick()
             except Exception:  # never let one bad cycle kill the monitor
                 log.exception("monitor tick failed")
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=idle_s)
-            except TimeoutError:
-                pass
+            stopper = asyncio.ensure_future(stop.wait())
+            waker = asyncio.ensure_future(self._wake.wait())
+            await asyncio.wait({stopper, waker}, timeout=idle_s, return_when=asyncio.FIRST_COMPLETED)
+            for t in (stopper, waker):
+                t.cancel()
+            self._wake.clear()
 
     def _backoff(self, st: SubState, now: int, error: str, retry_after_ms: int | None = None) -> None:
         st.failures += 1
@@ -115,6 +126,8 @@ class Monitor:
             return []
         now = await asyncio.to_thread(self.service.clock.now_ms)
         subs = await asyncio.to_thread(self.subscriptions, now)
+        if self.on_subscriptions:
+            self.on_subscriptions({(i.symbol, str(i.market_type), tf) for i, tf in subs})
         new: list[dict[str, Any]] = []
         for inst, tf in subs:
             st = self.state.setdefault((inst.key, tf), SubState())

@@ -5,6 +5,7 @@ import { TIMEFRAMES } from "./api.js";
 import { h, setChildren } from "./dom.js";
 import { makeClient } from "./storage.js";
 import { isMarket, marketLabel, normalizeSymbol, parseBinanceUrl, type Instrument } from "./symbol.js";
+import { AccountsView } from "./views/accounts.js";
 import { AlertsView } from "./views/alerts.js";
 import { AnalysisView } from "./views/analysis.js";
 import { CopilotView } from "./views/copilot.js";
@@ -53,6 +54,7 @@ tabButtons.forEach((btn, i) => {
 views.set("analysis", new AnalysisView($("panel-analysis"), app));
 views.set("copilot", new CopilotView($("panel-copilot"), app));
 views.set("studio", new StudioView($("panel-studio"), app));
+views.set("accounts", new AccountsView($("panel-accounts"), app));
 views.set("alerts", new AlertsView($("panel-alerts"), app));
 views.set("reports", new ReportsView($("panel-reports"), app));
 views.set("usage", new UsageView($("panel-usage"), app));
