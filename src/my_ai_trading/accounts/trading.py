@@ -310,10 +310,10 @@ class TradingService:
             return {"client_order_id": client_order_id, "state": "UNKNOWN",
                     "note": prefix + "the exchange does not list this order yet. Check again in a few seconds; "
                             "do not resend."}
-        if row.get("state") in TERMINAL and order.status.value not in TERMINAL:
-            return {"client_order_id": client_order_id, "state": row["state"], "note": prefix + "final state kept"}
-        self.journal.journal_update(client_order_id, state=order.status.value, order_json=order.model_dump_json())
-        return {"client_order_id": client_order_id, "state": order.status.value, "order": order.model_dump(mode="json"),
+        stored = self.journal.journal_update(client_order_id, state=order.status.value, order_json=order.model_dump_json())
+        if stored != order.status.value:  # a final state recorded meanwhile (e.g. a concurrent cancel) is kept
+            return {"client_order_id": client_order_id, "state": stored, "note": prefix + "final state kept"}
+        return {"client_order_id": client_order_id, "state": stored, "order": order.model_dump(mode="json"),
                 "note": note or "status from the exchange"}
 
     def cancel(self, client_order_id: str, *, user: str) -> dict[str, Any]:
@@ -331,8 +331,8 @@ class TradingService:
                                    note=f"cancel outcome unknown ({exc}); looked the order up")
         except ExchangeError as exc:
             raise TradingRefused(f"the exchange refused the cancel: {exc}") from None
-        self.journal.journal_update(client_order_id, state=order.status.value, order_json=order.model_dump_json())
-        return {"client_order_id": client_order_id, "state": order.status.value, "order": order.model_dump(mode="json")}
+        stored = self.journal.journal_update(client_order_id, state=order.status.value, order_json=order.model_dump_json())
+        return {"client_order_id": client_order_id, "state": stored, "order": order.model_dump(mode="json")}
 
     def _row(self, client_order_id: str, user: str) -> dict[str, Any]:
         rows = self.journal.journal(user, client_order_id=client_order_id)

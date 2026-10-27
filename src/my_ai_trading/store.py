@@ -347,10 +347,21 @@ class Store:
                 (row["client_order_id"], row["user_id"], row["connection_id"], row["exchange"], row["environment"],
                  row["request_json"], row["state"], None, None, row.get("created_at", now), now))
 
+    _TERMINAL = ("FILLED", "CANCELED", "REJECTED", "EXPIRED")
+
     def journal_update(self, client_order_id: str, *, state: str, order_json: str | None = None,
-                       message: str | None = None) -> None:
-        self._x("UPDATE trading_orders SET state=?, order_json=COALESCE(?, order_json), message=?, updated_at=? "
-                "WHERE client_order_id=?", (state, order_json, message, _now(), client_order_id))
+                       message: str | None = None) -> str | None:
+        """Set the state, except that a final state is never replaced by a non-final one. The check and the write
+        are one statement, so a concurrent cancel and status check cannot reorder them. Returns the stored state."""
+        terminal = ",".join("?" * len(self._TERMINAL))
+        with self._lock:
+            self._db.execute(
+                f"UPDATE trading_orders SET state=?, order_json=COALESCE(?, order_json), message=?, updated_at=? "
+                f"WHERE client_order_id=? AND (state NOT IN ({terminal}) OR ? IN ({terminal}))",
+                (state, order_json, message, _now(), client_order_id, *self._TERMINAL, state, *self._TERMINAL))
+            row = self._db.execute("SELECT state FROM trading_orders WHERE client_order_id=?",
+                                   (client_order_id,)).fetchone()
+        return row[0] if row else None
 
     def journal_row(self, client_order_id: str) -> dict[str, Any] | None:
         rows = self._q("SELECT * FROM trading_orders WHERE client_order_id=?", (client_order_id,))

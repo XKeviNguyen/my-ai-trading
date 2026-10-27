@@ -7,8 +7,8 @@ from my_ai_trading.accounts.analytics import RiskLimits, closed_trades, portfoli
 from my_ai_trading.accounts.models import AccountSnapshot, AccountTotals, Balance, Environment, Fill, Position, WalletType
 
 
-def fill(i, side, qty, price, fee="0", fee_asset="USDT", pnl=None, symbol="BTCUSDT"):
-    return Fill(trade_id=str(i), order_id=str(i), symbol=symbol, market="spot", side=side, price=D(price),
+def fill(i, side, qty, price, fee="0", fee_asset="USDT", pnl=None, symbol="BTCUSDT", market="spot"):
+    return Fill(trade_id=str(i), order_id=str(i), symbol=symbol, market=market, side=side, price=D(price),
                 quantity=D(qty), fee=D(fee), fee_asset=fee_asset, realized_pnl=None if pnl is None else D(pnl),
                 time_ms=1_000 + i)
 
@@ -50,8 +50,9 @@ def test_zero_quantity_fills_and_lookalike_fee_assets_are_handled():
 
 def test_futures_fills_use_the_exchange_reported_realized_pnl():
     # Binance reports realizedPnl "0" on opening fills; closing fills carry the realized result.
-    fills = [fill(1, "buy", "1", "100", "0.05", pnl="0"), fill(2, "sell", "1", "90", "0.05", pnl="-10"),
-             fill(3, "sell", "1", "95", "0.05", pnl="0"), fill(4, "buy", "1", "80", "0.05", pnl="15")]
+    fut = {"market": "usdm_perpetual"}
+    fills = [fill(1, "buy", "1", "100", "0.05", pnl="0", **fut), fill(2, "sell", "1", "90", "0.05", pnl="-10", **fut),
+             fill(3, "sell", "1", "95", "0.05", pnl="0", **fut), fill(4, "buy", "1", "80", "0.05", pnl="15", **fut)]
     trades = closed_trades(fills).trades
     # entry fees (0.05 on each opening fill) are charged when the position closes
     assert [(t.side, t.pnl, t.provenance) for t in trades] == [("long", D("-10.10"), "exchange_reported"),
@@ -117,3 +118,17 @@ def test_unified_account_coins_count_for_exposure_and_foreign_equity_is_not_adde
     ib = snap(exchange="ibkr", totals=[AccountTotals(wallet=WalletType.SECURITIES, equity=D("5000"), quote_asset="EUR")])
     out = portfolio([ib], {}.get)
     assert out["total_value_usd"]["value"] == "0.00" and out["unpriced_assets"] == ["ibkr:securities equity in EUR"]
+
+
+def test_a_break_even_futures_exit_is_still_a_closed_trade():
+    fut = {"market": "usdm_perpetual"}
+    trades = closed_trades([fill(1, "buy", "1", "100", "0.05", pnl="0", **fut),
+                            fill(2, "sell", "1", "100", "0.05", pnl="0", **fut)]).trades
+    assert [(t.side, t.pnl, t.fees) for t in trades] == [("long", D("-0.10"), D("0.10"))]
+
+
+def test_futures_shorts_without_reported_pnl_are_kept_and_derived():
+    fut = {"market": "usdm_perpetual"}  # e.g. Bybit executions carry no realized PnL
+    h = closed_trades([fill(1, "sell", "1", "100", **fut), fill(2, "buy", "1", "90", **fut)])
+    assert [(t.side, t.pnl, t.provenance) for t in h.trades] == [("short", D("10"), "derived")]
+    assert h.unmatched_sells == 0

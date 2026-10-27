@@ -264,6 +264,17 @@ def require_symbol(symbol: str, market: str) -> None:
         raise ValidationError(0, "market must be usdm_perpetual or spot")
 
 
+ACCOUNT_MARKETS = ("spot", "usdm_perpetual", "stock")
+ACCOUNT_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.]{0,29}$")  # same rule as the engine's account routes (BRK.B)
+
+
+def require_account_symbol(symbol: str, market: str) -> None:
+    if not isinstance(symbol, str) or not ACCOUNT_SYMBOL_RE.fullmatch(symbol):
+        raise ValidationError(0, "symbol must be 1-30 capital letters, digits or dots (e.g. BTCUSDT, BRK.B)")
+    if market not in ACCOUNT_MARKETS:
+        raise ValidationError(0, "market must be spot, usdm_perpetual or stock")
+
+
 def require_connection_id(cid: str) -> str:
     if not isinstance(cid, str) or not CONN_ID_RE.fullmatch(cid):
         raise ValidationError(0, "invalid connection id")
@@ -544,7 +555,7 @@ class ApiClient:
         return self.request("GET", "/api/v1/accounts/portfolio", query={"environment": environment} if environment else None)
 
     def performance(self, connection_id: str, symbol: str, market: str) -> dict[str, Any]:
-        require_symbol(symbol, market)
+        require_account_symbol(symbol, market)
         return self.request("GET",
                             f"/api/v1/accounts/connections/{require_connection_id(connection_id)}/performance",
                             query={"symbol": symbol, "market": market})

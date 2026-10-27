@@ -390,3 +390,18 @@ def test_balance_warnings_also_read_unified_accounts(world):
         assert any("exceeds available balance 10" in w for w in fut.warnings)  # 100 / 5x = 20 margin
     finally:
         SimExchange.snapshot = original
+
+
+def test_a_stale_status_never_overwrites_a_final_state_even_when_interleaved(world):
+    _, trading, store, connect, *_ = world
+    cid = connect()
+    enable(trading, cid)
+    p, token = trading.preview(cid, DRAFT, user="local")
+    coid = trading.submit(p.preview_id, token, user="local")["client_order_id"]
+    stale = SimExchange.book[coid]  # the status check reads NEW from the exchange ...
+    assert trading.cancel(coid, user="local")["state"] == "CANCELED"  # ... a cancel lands meanwhile ...
+    SimExchange.book[coid] = stale  # ... and the late status check now writes its older NEW result
+    assert trading.reconcile(coid, user="local")["state"] == "CANCELED"
+    assert store.journal("local")[0]["state"] == "CANCELED"
+    assert store.journal_update(coid, state="NEW") == "CANCELED"  # the guard lives in the SQL itself
+    assert store.journal_update(coid, state="FILLED") == "FILLED"  # final -> final (exchange truth) is allowed

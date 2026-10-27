@@ -227,6 +227,20 @@ The rest of the work implements that boundary and tests it.
 
 **Parallel work, one integration gate.** We built the Bybit, OKX, Interactive Brokers and desktop parts in parallel, in isolated worktrees with strict file ownership. We integrated them one at a time, reran every suite after each, and kept only the files each part owned. Independent read-only security and data reviews then found 4 high and 8 medium issues, none critical. We fixed them all with regression tests, except two that we documented as known limits: UI-enforced per-order confirmation, and market-order size rules.
 
+### Code review on PR #5
+
+CI was green, but automated code review on PR #5 found five real defects. All five came from rules that were right in one place and wrong in another:
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| A futures position closed at its entry price showed no trade | Opening and closing fills were told apart by "realized PnL is zero", which is also true for a break-even exit | Opening or closing is decided from the position the fill meets; the exchange's realized PnL is used only for the closed part |
+| Bybit futures shorts disappeared from performance | The new "spot cannot go short" rule also ran on futures fills, because Bybit reports no realized PnL | The no-short rule applies only to spot; derivatives keep short lots |
+| IBKR paper orders were impossible in the desktop app | The desktop ticket offered a fixed list of markets without "stock" | The ticket uses the connected exchange's own markets, as the extension does |
+| A late status check could overwrite CANCELED with NEW | "Keep a final state" was checked in Python, then written in a separate step | The rule lives in the SQL `UPDATE` itself, so it is atomic |
+| An OKX inverse swap left out of positions was not disclosed | Adapter warnings stopped at the snapshot | Both clients list them as "Not included" next to exposure and positions |
+
+As before, each fix has a regression test that reproduces the reviewer's exact example.
+
 ### OCR accuracy, measured honestly
 
 We asked for 99% accuracy on chart price-axis labels, and made the claim testable first. A seeded generator renders chart-like images with dark and light themes, Hershey and real TrueType fonts, prices from 0.00008 to 1,700,000 with thousands separators, gridlines, price tags, JPEG compression, noise and HiDPI scales. Tuning used one seed range only; the reported number comes from a separate held-out range that was never tuned on.

@@ -24,7 +24,7 @@ from ..widgets import ResultArea, bullet_list, buddy_label, card, heading, kv_fo
 
 SECTIONS = (("connections", "Connections"), ("portfolio", "Portfolio"), ("positions", "Positions"),
             ("orders", "Orders"), ("performance", "Performance"))
-MARKET_CHOICES = (("spot", "Spot"), ("usdm_perpetual", "USD-M perpetual"))
+MARKET_CHOICES = (("spot", "Spot"), ("usdm_perpetual", "USD-M perpetual"), ("stock", "Stock"))
 SECRET_HINTS = (Qt.InputMethodHint.ImhSensitiveData | Qt.InputMethodHint.ImhNoPredictiveText
                 | Qt.InputMethodHint.ImhNoAutoUppercase)
 
@@ -138,7 +138,7 @@ class AccountsView(QWidget):
         gen, sec = self._seq, self.section()
         body = self.bodies[sec]
         body.set(status_label("loading", "Loading…"))
-        need_catalog = sec == "connections" and self.catalog is None
+        need_catalog = sec in ("connections", "orders", "performance") and self.catalog is None
         client = self.ctx.client
 
         def job() -> tuple[dict, dict | None, dict | None]:
@@ -372,6 +372,19 @@ class AccountsView(QWidget):
         return w
 
     @staticmethod
+    def _gaps(p: dict[str, Any]) -> QWidget | None:
+        """What the exchanges could not include: exposure and positions are incomplete by exactly these items."""
+        items = F.str_list(p.get("completeness_warnings"))
+        if not items:
+            return None
+        box, lay = card(f"Not included ({len(items)})")
+        box.setObjectName("completeness-warnings")
+        lay.addWidget(plain_label("Exposure and positions leave out these items; the reported equity may still "
+                                  "include them."))
+        lay.addWidget(bullet_list(items))
+        return box
+
+    @staticmethod
     def _env_name(p: dict[str, Any]) -> str:
         return "Live · read-only" if p.get("environment") == "live" else "Testnet"
 
@@ -383,7 +396,7 @@ class AccountsView(QWidget):
                                  f"${F.text(total.get('value'))}", bold=True, name="kv-value"))
         if total.get("note"):
             hl.addWidget(plain_label(F.text(total.get("note")), muted=True))
-        out: list[QWidget | None] = [self._env_switch(p), head]
+        out: list[QWidget | None] = [self._env_switch(p), head, self._gaps(p)]
         warnings = F.str_list(p.get("warnings"))
         if warnings:
             w, wl = card(f"Risk warnings ({len(warnings)})")
@@ -431,6 +444,7 @@ class AccountsView(QWidget):
         body.set(
             self._env_switch(p),
             heading(f"Open positions ({len(positions)}, {self._env_name(p)})"),
+            self._gaps(p),
             data_table("positions-table", "Open positions",
                        ["Symbol", "Side", "Size", "Notional", "Unreal. P&L", "Leverage", "To liq."], rows)
             if rows else plain_label("No open positions.", muted=True),
@@ -545,6 +559,12 @@ class AccountsView(QWidget):
         lay.addWidget(msg)
         return box
 
+    def _markets_for(self, conn: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+        """Only the markets the connected exchange supports (e.g. stock for IBKR paper), as the extension does."""
+        info = next((e for e in _dicts((self.catalog or {}).get("exchanges")) if e.get("id") == conn.get("exchange")), {})
+        offered = set(F.str_list(info.get("markets"))) or {"spot", "usdm_perpetual"}
+        return tuple(c for c in MARKET_CHOICES if c[0] in offered) or MARKET_CHOICES[:2]
+
     def _ticket(self, conn: dict[str, Any]) -> QWidget:
         box, lay = card("Testnet order")
         box.setObjectName("order-ticket")
@@ -553,7 +573,7 @@ class AccountsView(QWidget):
         symbol = QLineEdit(self.ctx.symbol or "BTCUSDT")
         symbol.setObjectName("order-symbol")
         symbol.setMaxLength(30)
-        market = _combo(MARKET_CHOICES, self.ctx.market)
+        market = _combo(self._markets_for(conn), self.ctx.market)
         market.setObjectName("order-market")
         side = _combo((("buy", "Buy"), ("sell", "Sell")))
         side.setObjectName("order-side")

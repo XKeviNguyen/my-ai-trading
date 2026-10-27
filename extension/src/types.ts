@@ -499,6 +499,7 @@ export interface PortfolioResponse {
   errors: { connection_id: string; exchange: string; error: string }[];
   environment: "live" | "testnet";
   available_environments: ("live" | "testnet")[];
+  completeness_warnings: string[];
 }
 
 export interface PerformanceResponse {

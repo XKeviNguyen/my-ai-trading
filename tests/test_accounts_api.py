@@ -198,3 +198,19 @@ def test_an_optional_extension_id_pin_rejects_other_extensions(monkeypatch):
     monkeypatch.setenv("MY_AI_TRADING_EXTENSION_ID", "not-an-id")
     with pytest.raises(ValueError):
         create_app(service=svc, store=store, copilot=Copilot(store, None), api_token=TOKEN)
+
+
+def test_adapter_completeness_warnings_reach_the_portfolio(env, monkeypatch):
+    c, _ = env
+    c.post("/api/v1/accounts/connections", json=BODY, headers=H)
+    original = FakeExchange.snapshot
+
+    def with_gap(self, cred, connection_id):
+        snap = original(self, cred, connection_id)
+        return snap.model_copy(update={"warnings": ["BTC-USD-SWAP (inverse) not included in positions"],
+                                       "unavailable": ["margin: not enabled for this key"]})
+    monkeypatch.setattr(FakeExchange, "snapshot", with_gap)
+    out = c.get("/api/v1/accounts/portfolio?environment=testnet", headers=H).json()
+    assert out["completeness_warnings"] == ["fakeex: BTC-USD-SWAP (inverse) not included in positions",
+                                            "fakeex: margin: not enabled for this key"]
+    assert out["connections"][0]["warnings"] == ["BTC-USD-SWAP (inverse) not included in positions"]

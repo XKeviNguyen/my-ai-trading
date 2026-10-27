@@ -172,14 +172,20 @@ class TradeHistory:
     unmatched_sells: int = 0  # spot sells with no earlier buy in the loaded fills (history starts later)
 
 
+SHORTABLE_MARKETS = frozenset({"usdm_perpetual", "coinm_perpetual", "futures", "option"})
+
+
 def closed_trades(fills: Iterable[Fill]) -> TradeHistory:
-    """Round trips from fills. Uses the exchange's realized PnL when it reports one (futures); otherwise matches
-    fills first-in-first-out per symbol (spot), which is derived. Entry and exit fees paid in the quote asset are
-    subtracted proportionally; fees paid in other assets are counted in `fees_excluded`, never mixed in.
-    A spot sell with no earlier buy in the loaded fills is counted as unmatched, never turned into a short."""
+    """Round trips from fills, matched first-in-first-out per symbol and market.
+
+    Whether a fill opens or closes is decided from the position it meets (direction and size), never from the
+    realized PnL, so a break-even exit is still a closed trade. For the closed part, the exchange's realized PnL
+    is used when the fill reports one (exchange_reported); otherwise it is computed from the matched prices
+    (derived). Entry and exit fees paid in the quote asset are subtracted proportionally; fees paid in other
+    assets are counted in `fees_excluded`, never mixed in. Spot cannot go short: a spot sell with no earlier buy in
+    the loaded fills is counted as unmatched. Derivatives keep short lots."""
     out: list[ClosedTrade] = []
-    lots: dict[str, deque[list]] = defaultdict(deque)  # symbol -> [signed qty, price, fee per unit, fee excluded]
-    opening: dict[str, list[Decimal]] = defaultdict(lambda: [ZERO, ZERO])  # futures: open qty, unpaid entry fees
+    lots: dict[tuple[str, str], deque[list]] = defaultdict(deque)  # -> [signed qty, price, fee per unit, excluded]
     unmatched = 0
     for f in sorted(fills, key=lambda x: (x.time_ms, x.trade_id)):
         if f.quantity <= 0:
@@ -187,24 +193,9 @@ def closed_trades(fills: Iterable[Fill]) -> TradeHistory:
         quote_fee = _quote_fee(f)
         own_excluded = int(quote_fee is None)  # this fill's fee was paid in another asset
         excluded = own_excluded
-        fee = quote_fee or ZERO
-        if f.realized_pnl is not None:
-            book_f = opening[f.symbol]
-            if f.realized_pnl == 0:  # opening fill: its fee is charged when the position closes
-                book_f[0] += f.quantity
-                book_f[1] += fee
-                continue
-            share = min(f.quantity, book_f[0]) / book_f[0] if book_f[0] > 0 else ZERO
-            entry_fee = book_f[1] * share
-            book_f[0] -= min(f.quantity, book_f[0])
-            book_f[1] -= entry_fee
-            out.append(ClosedTrade(f.symbol, "long" if f.side == "sell" else "short", f.quantity,
-                                   f.realized_pnl - fee - entry_fee, fee + entry_fee, f.time_ms, "exchange_reported",
-                                   excluded))
-            continue
-        fee_per_unit = fee / f.quantity
+        fee_per_unit = (quote_fee or ZERO) / f.quantity
         signed = f.quantity if f.side == "buy" else -f.quantity
-        book = lots[f.symbol]
+        book = lots[(f.symbol, f.market)]
         remaining, pnl, closed_qty, fees = signed, ZERO, ZERO, ZERO
         while remaining and book and (book[0][0] > 0) != (remaining > 0):
             lot = book[0]
@@ -217,13 +208,15 @@ def closed_trades(fills: Iterable[Fill]) -> TradeHistory:
             remaining = remaining + take if remaining < 0 else remaining - take
             if lot[0] == 0:
                 book.popleft()
-        if remaining < 0:
+        if remaining < 0 and f.market not in SHORTABLE_MARKETS:
             unmatched += 1  # spot cannot go short: this sell closes a buy older than the loaded history
         elif remaining:
             book.append([remaining, f.price, fee_per_unit, own_excluded])
         if closed_qty:
-            out.append(ClosedTrade(f.symbol, "long" if f.side == "sell" else "short", closed_qty, pnl - fees, fees,
-                                   f.time_ms, "derived", excluded))
+            reported = f.realized_pnl is not None
+            gross = f.realized_pnl if reported else pnl
+            out.append(ClosedTrade(f.symbol, "long" if f.side == "sell" else "short", closed_qty, gross - fees, fees,
+                                   f.time_ms, "exchange_reported" if reported else "derived", excluded))
     return TradeHistory(out, unmatched)
 
 

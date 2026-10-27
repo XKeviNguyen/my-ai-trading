@@ -274,6 +274,7 @@ export class AccountsView implements View {
       ),
       p.warnings.length ? h("section", { class: "card contra", "aria-label": "Risk warnings" }, h("h4", null, `Risk warnings (${p.warnings.length})`), list(p.warnings)) : null,
       p.errors.length ? h("section", { class: "card lane lane-fault" }, h("h4", null, "Connections with errors"), list(p.errors.map((e) => `${e.exchange}: ${e.error}`))) : null,
+      this.gaps(p.completeness_warnings),
       h("h3", null, "Allocation"),
       p.allocation.length
         ? table("Exposure by asset", ["Asset", "Exposure (USD)", "Share"], p.allocation.map((a) => [a.asset, a.exposure_usd, a.share_pct ? `${a.share_pct}%` : "—"]))
@@ -300,8 +301,18 @@ export class AccountsView implements View {
             p.positions.map((x) => [`${x.symbol} · ${x.exchange}`, x.side, x.quantity, x.notional_usd ?? "—", x.unrealized_pnl ?? "—",
                                     x.leverage ? `${x.leverage}×` : "—", x.liquidation_distance_pct ? `${x.liquidation_distance_pct}%` : "—"]))
         : h("p", { class: "muted" }, "No open positions."),
+      this.gaps(p.completeness_warnings),
       h("p", { class: "small muted" }, "Values are reported by the exchange; distance to liquidation is calculated from its mark and liquidation prices."),
     );
+  }
+
+  /** What the exchanges could not include: exposure and positions are incomplete by exactly these items. */
+  private gaps(items: string[] | undefined): HTMLElement | null {
+    if (!items?.length) return null;
+    return h("section", { class: "card contra", "aria-label": "Incomplete data" },
+      h("h4", null, `Not included (${items.length})`),
+      h("p", { class: "small" }, "Exposure and positions leave out these items; the reported equity may still include them."),
+      list(items));
   }
 
   private needConnection(): void {

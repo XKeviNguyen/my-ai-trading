@@ -144,7 +144,10 @@ class AccountService:
         out["available_environments"] = available
         out["connections"] = [{"connection_id": s.connection_id, "exchange": s.exchange,
                                "environment": str(s.environment), "as_of_ms": s.as_of_ms,
-                               "unavailable": s.unavailable} for s in snaps]
+                               "unavailable": s.unavailable, "warnings": s.warnings} for s in snaps]
+        # What the adapters could not include (e.g. an OKX inverse swap, IBKR asset classes): exposure and
+        # positions above are incomplete by exactly these items, even when the reported equity includes them.
+        out["completeness_warnings"] = [f"{s.exchange}: {w}" for s in snaps for w in (*s.warnings, *s.unavailable)]
         out["errors"] = errors
         return out
 

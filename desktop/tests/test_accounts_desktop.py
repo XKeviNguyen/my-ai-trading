@@ -440,3 +440,32 @@ def test_account_formatting_helpers():
                                               '"price": null}'}) == "sell 1 X market"
     assert F.estimate_lines({"fee": {"value": None, "provenance": "estimate", "note": "n"}}) == \
         ["fee: not estimated (estimate) — n"]
+
+
+def test_order_markets_come_from_the_exchange_catalog():
+    from my_ai_trading_desktop.views.accounts import AccountsView
+    view = AccountsView.__new__(AccountsView)  # only _markets_for is exercised; no widgets needed
+    view.catalog = {"exchanges": [{"id": "ibkr", "markets": ["stock"]},
+                                  {"id": "binance", "markets": ["spot", "usdm_perpetual"]}]}
+    assert view._markets_for({"exchange": "ibkr"}) == (("stock", "Stock"),)
+    assert [m for m, _ in view._markets_for({"exchange": "binance"})] == ["spot", "usdm_perpetual"]
+    assert [m for m, _ in view._markets_for({"exchange": "unknown"})] == ["spot", "usdm_perpetual"]
+
+
+def test_account_symbols_allow_stocks_but_market_data_symbols_stay_strict():
+    from my_ai_trading_desktop.client import ValidationError, require_account_symbol, require_symbol
+    require_account_symbol("BRK.B", "stock")
+    require_account_symbol("BTCUSDT", "usdm_perpetual")
+    for sym, market in (("brk.b", "stock"), (".X", "stock"), ("BTCUSDT", "options")):
+        with pytest.raises(ValidationError):
+            require_account_symbol(sym, market)
+    with pytest.raises(ValidationError):
+        require_symbol("BRK.B", "spot")
+
+
+def test_portfolio_shows_what_the_exchange_could_not_include(qapp):
+    from my_ai_trading_desktop.views.accounts import AccountsView
+    gaps = AccountsView._gaps({"completeness_warnings": ["okx: BTC-USD-SWAP (inverse) not included in positions"]})
+    assert gaps is not None and gaps.objectName() == "completeness-warnings"
+    assert "inverse" in texts(gaps)
+    assert AccountsView._gaps({"completeness_warnings": []}) is None
