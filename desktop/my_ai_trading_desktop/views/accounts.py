@@ -37,11 +37,19 @@ def data_table(name: str, caption: str, head: list[str], rows: list[list[str]]) 
     t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     t.setTabKeyNavigation(False)
     t.verticalHeader().setVisible(False)
-    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    header = t.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    header.setStretchLastSection(True)  # use the full width instead of leaving an empty band
     for i, r in enumerate(rows):
         for j, value in enumerate(r):
-            t.setItem(i, j, QTableWidgetItem(value))  # table items are plain text
-    t.setMinimumHeight(min(320, 40 + 30 * len(rows)))
+            item = QTableWidgetItem(value)  # table items are plain text
+            if j > 0:
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)  # numbers line up
+            t.setItem(i, j, item)
+    t.resizeRowsToContents()
+    # Exactly as tall as its rows (scrolling only beyond 10 rows), so short tables leave no empty space.
+    height = t.horizontalHeader().sizeHint().height() + sum(t.rowHeight(i) for i in range(min(len(rows), 10)))
+    t.setFixedHeight(height + 2 * t.frameWidth() + (2 if len(rows) <= 10 else 0))
     return t
 
 

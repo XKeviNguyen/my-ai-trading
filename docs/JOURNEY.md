@@ -15,7 +15,8 @@ For the current feature status, see the [README](../README.md) and [PROGRESS.md]
 | 2026-10-27 | MACD, Bollinger Bands, ADX, chart patterns, monthly timeframe, ML lab, saved reports, AI answer cache, desktop app | `8bedde8`, PR #2 |
 | 2026-10-27 | Four code review findings on PR #2 fixed, each with a regression test | `2c9c49c` |
 | 2026-10-27 | Neon night design system for the Chrome side panel and the desktop app | PR #3 |
-| 2026-10-27 | Exchange accounts and testnet Trading Mode (R8): Binance, Bybit, OKX, Interactive Brokers paper | `feature/accounts-trading` |
+| 2026-10-27 | Exchange accounts and testnet Trading Mode (R8): Binance, Bybit, OKX, Interactive Brokers paper | PR #5 |
+| 2026-10-27 | README rebuilt as a visual tour: architecture, workflows, database, screenshots | `docs/readme-showcase` |
 
 ## Starting point
 
@@ -263,6 +264,22 @@ Readings that break the scale are reported as outliers, never silently "correcte
 ### Not verified yet
 
 No adapter has run against a real testnet from this repository. That needs the owner's testnet keys, entered in the app. The desktop app has been tested offscreen only.
+
+## Phase 7: a README that shows how it works
+
+The README described features, but readers could not see how the parts fit together. We rebuilt it for two audiences: people evaluating the engineering, and people who want to use the app.
+
+- **Diagrams rendered by GitHub:** Mermaid diagrams for the system architecture, the candle-to-insight pipeline, monitoring, AI routing, the testnet order sequence and its states, the credential lifecycle, and the database (an ER diagram generated from the real schema).
+- **Real screenshots:** taken from the actual extension and desktop app against a simulated testnet account, and labeled as synthetic data.
+- **Tables built from the code:** the API surface, tech stack, security model, engineering decisions and test counts come from the code and test runs, not from memory.
+
+### Problems and how we solved them
+
+**Overclaiming creeps into marketing text.** The first draft called the app a workbench "for crypto and stock traders" and listed the desktop app as running on three operating systems. Stock analysis is not supported (only IBKR paper accounts), and the desktop app has been tested only on Linux. Both claims were corrected before review.
+
+**A screenshot exposed a real layout flaw.** In the desktop portfolio, the tables used only part of the window width and left empty space under short tables. We fixed the shared table helper: the last column stretches to fill the width, numbers are right-aligned, and the height fits the rows. Then we retook the screenshot.
+
+**Route listings can mislead.** A script that listed the API routes showed none of the account or trading routes, because this FastAPI version nests included routers. The tests proved the routes exist; the README table was built from the router source instead.
 
 ## Lessons we keep
 
