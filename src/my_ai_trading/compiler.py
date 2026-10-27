@@ -33,9 +33,9 @@ _UNSAFE = [
 _TF_WORDS = {
     "hourly": "1h", "1-hour": "1h", "one-hour": "1h", "4-hour": "4h", "four-hour": "4h", "daily": "1d",
     "day": "1d", "weekly": "1w", "week": "1w", "15-minute": "15m", "5-minute": "5m", "30-minute": "30m",
-    "2-hour": "2h", "12-hour": "12h",
+    "2-hour": "2h", "12-hour": "12h", "monthly": "1M", "month": "1M",
 }
-_TF = r"(?P<tf>\d{1,2}\s?[mhdw]|hourly|daily|weekly|\d{1,2}-(?:minute|hour)|one-hour|four-hour|day|week)"
+_TF = r"(?P<tf>\d{1,2}\s?[mhdw]|hourly|daily|weekly|monthly|\d{1,2}-(?:minute|hour)|one-hour|four-hour|day|week|month)"
 _MA = r"(?P<ma>sma|ema|ma)\s?\(?(?P<n>\d{1,3})\)?"
 
 
@@ -77,7 +77,8 @@ def _metric(ma: str, n: str, tf: str) -> MetricRef:
 
 def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
                   context: dict[str, str]) -> Any | None:
-    t = re.sub(r"\s+", " ", text).strip().lower()  # single spaces: no backtracking over whitespace runs
+    # "1M" means one month; lowercasing would turn it into "1m" (one minute).
+    t = re.sub(r"\s+", " ", re.sub(r"\b1M\b", "monthly", text)).strip().lower()  # single spaces: no backtracking over whitespace runs
     if len(t) > MAX_CLAUSE_CHARS:
         return None
 
@@ -128,10 +129,55 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
         return Compare(left=MetricRef(name="volume_ratio", period=int(m.group("n")), timeframe=tf),
                        op=op, right=float(m.group("k")))
 
-    m = re.search(r"rsi\s?\(?(?P<n>\d{1,3})?\)?\s+(?:is\s+)?(?P<dir>below|above|under|over)\s+(?P<v>\d{1,3}(?:\.\d+)?)"
+    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?adx\s?\(?(?P<n>\d{{1,3}})?\)?\s+(?:is\s+)?(?P<dir>below|above|under|over)\s+(?P<v>\d{{1,3}}(?:\.\d+)?)"
                   rf"(?:\s+on\s+(?:the\s+)?{_TF})?", t)
     if m:
-        tf = need_tf(m.group("tf"), text)
+        tf = need_tf(m.group("tf") or m.group("tf0"), text)
+        if not tf:
+            return None
+        if not m.group("n"):
+            assumptions.append("ADX period not given; assumed 14 (Wilder)")
+        return Compare(left=MetricRef(name="adx", period=int(m.group("n") or 14), timeframe=tf),
+                       op="<" if m.group("dir") in ("below", "under") else ">", right=float(m.group("v")))
+
+    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: line)? cross(?:es)? (?P<dir>above|below) (?:the )?signal(?: line)?"
+                  rf"(?: on (?:the )?{_TF})?", t)
+    if m:
+        tf = need_tf(m.group("tf") or m.group("tf0"), text)
+        if not tf:
+            return None
+        assumptions.append("MACD uses the standard 12/26/9 periods")
+        return Compare(left=MetricRef(name="macd_histogram", timeframe=tf),
+                       op="crosses_above" if m.group("dir") == "above" else "crosses_below", right=0.0)
+
+    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: (?P<part>histogram|line))? (?:is )?(?P<dir>above|below|over|under) "
+                  rf"(?:zero|0)(?: on (?:the )?{_TF})?", t)
+    if m:
+        tf = need_tf(m.group("tf") or m.group("tf0"), text)
+        if not tf:
+            return None
+        assumptions.append("MACD uses the standard 12/26/9 periods")
+        # Bare "MACD" is the MACD line; only an explicit "histogram" tests MACD minus signal.
+        name = "macd_histogram" if m.group("part") == "histogram" else "macd_line"
+        return Compare(left=MetricRef(name=name, timeframe=tf),
+                       op=">" if m.group("dir") in ("above", "over") else "<", right=0.0)
+
+    m = re.search(rf"(?:{_TF} )?(?:close|price) (?:closes |is )?(?P<dir>above|below) (?:the )?(?P<band>upper|lower) "
+                  rf"bollinger(?: band)?(?: on (?:the )?{_TF.replace('tf', 'tf2')})?", t)
+    if m:
+        tf = need_tf(m.group("tf") or m.group("tf2"), text)
+        if not tf:
+            return None
+        assumptions.append("Bollinger Bands use 20 periods and 2 standard deviations")
+        above = m.group("dir") == "above"
+        level = 1.0 if m.group("band") == "upper" else 0.0
+        return Compare(left=MetricRef(name="bollinger_percent_b", period=20, timeframe=tf),
+                       op=">" if above else "<", right=level)
+
+    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?rsi\s?\(?(?P<n>\d{{1,3}})?\)?\s+(?:is\s+)?(?P<dir>below|above|under|over)\s+(?P<v>\d{{1,3}}(?:\.\d+)?)"
+                  rf"(?:\s+on\s+(?:the\s+)?{_TF})?", t)
+    if m:
+        tf = need_tf(m.group("tf") or m.group("tf0"), text)
         if not tf:
             return None
         n = m.group("n")
@@ -214,7 +260,7 @@ def compile_prompts(prompts: list[str], *, name: str = "Custom strategy",
                          parsed[0] if len(parsed) == 1 else AllOf(items=parsed))
 
     if not nodes:
-        return Proposal("UNRESOLVED", assumptions=assumptions, unresolved=unresolved or ["nothing recognised"])
+        return Proposal("UNRESOLVED", assumptions=assumptions, unresolved=unresolved or ["nothing recognized"])
     condition = nodes[0] if len(nodes) == 1 else AllOf(items=nodes)
     trigger = _trigger_timeframe(condition)
     try:

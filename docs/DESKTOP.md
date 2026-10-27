@@ -1,0 +1,89 @@
+# Native desktop client (PySide6/Qt)
+
+PRD F11 lists a later native client as an option to evaluate. This is a first PySide6 implementation
+under `desktop/` (distribution `my-ai-trading-desktop`, command `my-ai-trading-desktop`). Like the Chrome
+side panel, it is a thin **client of the local engine API**: all analysis, rule compilation, monitoring
+and AI routing stay in the Python engine. The desktop app places no orders, uses no exchange
+credentials and talks to no host other than the local engine.
+
+Install, run and test commands are in [`desktop/README.md`](../desktop/README.md).
+
+## Architecture
+
+| Module | Role |
+|---|---|
+| `client.py` | Typed stdlib (`urllib`) client. Fixed base URL `http://127.0.0.1:8765`, bearer token, timeouts, response size cap, redirects refused, proxies disabled. HTTP and network failures map to typed exceptions. No Qt imports. |
+| `formatting.py` | Pure helpers for numbers, times, labels, validation, alert cursor and notification text. No Qt imports. |
+| `worker.py` | `TaskRunner`: runs blocking API calls in a `QThreadPool`; results come back to the GUI thread through a queued signal. The UI never blocks on the network. |
+| `widgets.py` | Plain-text building blocks (labels, cards, lists, read-only text boxes, confirmation dialog). |
+| `context.py` | Shared state: client, runner, active instrument, token source, settings cache. |
+| `views/*.py` | One module per tab. |
+| `app.py` | Main window, instrument bar, tabs, tray icon, entry point. |
+
+The port is a constructor argument of `ApiClient`/`MainWindow` **for tests only** (the engine's Host
+allowlist is tied to its port); the app itself always uses 8765 and has no option to change host or port.
+
+## Tabs
+
+| Tab | Endpoint(s) | Notes |
+|---|---|---|
+| Instrument bar | — | Symbol entry (normalized, `^[A-Z0-9]{3,20}$`), market (USD-M perpetual / spot), analysis timeframe (1h/4h/1d/1w/1M). Remembered in QSettings. |
+| Analysis | `GET /analysis` | Instrument header (symbol, market, venue, as-of time and age, analysis timeframe, source, STALE/PROVIDER_ERROR counts); per-timeframe status, trend, bar close and age, close, SMA50/200, RSI14, volume ratio, levels, events with invalidation, data notes; alignment verdict; each selected methodology perspective on its own with exact mode label, applicability status, requested mode, evaluation vs analysis timeframe, evaluation state, checks, unevaluated criteria, invalidation, tactical layer, reasons, offered routes (switch mode or open Strategy Studio) and provenance. No BUY/SELL and no vote. |
+| Copilot | `POST /copilot/ask`, `/copilot/challenge`, `/copilot/vision` | Deterministic facts are shown separately from labeled model interpretation (model, tokens, estimated cost) and from the fallback reason. Challenge My Thesis shows assessment, supporting and contradicting evidence, assumptions, unknowns, falsification conditions, proposed tests and observations. Screenshot upload sends only a file you pick (PNG/JPEG/WEBP up to 5 MB) and shows `local_analysis` (geometry, OCR status, cross-checks, ambiguities) and optional visual hypotheses. |
+| Strategy Studio | `/strategies/compile`, `/strategies/dry-run`, `POST /strategies`, `/approve`, `/deactivate`, `GET /strategies` | Compile prompts to preview, assumptions, unresolved and rejected items; dry-run on the current symbol; save a draft; approve through a confirmation dialog that shows the exact `rule_hash` (Cancel is the default button); deactivate; list with versions and each version's server `preview`. |
+| Alerts | `GET /alerts?after_seq=N` | Polls every 30 s with the `next_after_seq` cursor while the app runs. The first poll only sets a baseline. Optional tray notifications (off by default) for non-quiet alerts only, at most 5 per poll, plain text with markup characters removed. |
+| Reports | `POST /reports`, `GET /reports`, `GET /reports/{id}?format=markdown` | Save the current analysis as a report, list saved reports, export Markdown to a file chosen with a save dialog (new files are created with owner-only permissions). |
+| Methods | `GET /methodologies`, `PUT /settings` | All 20 profiles; enable or disable any of them (including all); NATIVE/HYBRID/ADAPTED per profile with the exact F13 label; saves the full settings object. |
+| Usage | `GET /usage` | Tokens and estimated cost vs budgets, calls with unknown cost, cache hits and cache hit rate, per feature/model table, estimate note. |
+| Settings | `GET`/`PUT /settings`, `GET /health` | Token source and connection test, default analysis timeframe, watchlist, pause alerts, quiet hours (UTC), AI data consent and deep-analysis opt-in with explanations, monthly token/USD budgets. Saves fetch the current settings and PUT the full object back. |
+
+Keyboard: Ctrl+1 … Ctrl+8 switch tabs; field labels have Alt mnemonics; Tab moves through controls
+(multi-line text boxes pass Tab on instead of inserting it). Fonts follow the system font and scale with
+it, layouts wrap at small window sizes (minimum 360 × 420), and the app uses the system palette (no
+hard-coded colors), so it follows the desktop light/dark theme.
+
+## Security notes
+
+- **Token**: read from `~/.config/my-ai-trading/api_token` (respects `XDG_CONFIG_HOME`) on each request, or
+  pasted in Settings and kept in memory only for the session. It is never written to QSettings, never
+  shown, never logged, and is sent only as `Authorization: Bearer …` to `127.0.0.1:8765`. Error messages
+  redact it even if a server echoes it back.
+- **No forwarding**: HTTP redirects are refused and `http_proxy`/`HTTPS_PROXY` settings are ignored, so the
+  token cannot reach another host.
+- **Plain text only**: API, model and user strings are rendered with `Qt.PlainText` labels, read-only
+  `QPlainTextEdit` and table items. A test fails the build if the desktop source contains `setHtml`,
+  `RichText`/`AutoText`, bare `eval(`/`exec(`, `subprocess`, `shell=True`, `os.system`, `pickle` or
+  `__import__`, or creates a `QLabel` outside the plain-text helpers.
+- **Errors**: 401 → token hint with an Open Settings button; 421 or connection refused → "run
+  `my-ai-trading serve`"; 429/503 → retry-after; 422 → the validation detail; 502 → provider error;
+  timeouts are reported separately. Unexpected exceptions show a generic message without internal details.
+
+## Tests
+
+`desktop/tests` (run with `QT_QPA_PLATFORM=offscreen`):
+
+- `test_client.py` — token only to the fixed base URL, health without token, error mapping for every
+  status, token never in messages, redirects refused (301/302/303/307/308) with a second server proving
+  nothing is forwarded, proxy variables ignored, connection refused and timeout mapping, client-side
+  validation, multipart shape, Markdown text responses, token file location.
+- `test_formatting.py` — pure helpers, exact mode labels, alert cursor/baseline logic, markup-free
+  notifications.
+- `test_integration.py` — starts the real core API with uvicorn on a free local port and the synthetic
+  fake exchange, builds the main window offscreen, and drives analysis, compile → save → approve (and
+  cancel), dry-run, ask, challenge, screenshot upload, methods (all off), usage, settings, reports export,
+  alert baseline/notification, wrong token and engine-down errors.
+- `test_source_safety.py` — the static guard described above.
+
+## Known limitations
+
+- Tested only offscreen (`QT_QPA_PLATFORM=offscreen`). Tray notifications depend on the desktop
+  environment's StatusNotifier/system tray support; GNOME needs an extension for a tray. Screen capture
+  is not implemented: you pick a screenshot file yourself.
+- Alerts are polled only while the app is open; the alert cursor is in memory, so each start sets a new
+  baseline (no notifications for alerts that arrived while the app was closed; they still appear in the list).
+- Strategy revision (`PUT /strategies/{id}`), backtests (`POST /backtest`) and monitor status are not
+  surfaced yet.
+- PySide6-Essentials is a large dependency (about 240 MB installed for 6.12.0; the full `PySide6` meta-package
+  with add-ons and WebEngine came to about 670 MB in total and is not needed).
+- PRD F11 asks to *evaluate* PySide6 versus Tauri. This implementation provides a working PySide6
+  baseline; memory use and packaging have not been measured yet.

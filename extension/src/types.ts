@@ -76,8 +76,18 @@ export interface TimeframeReport {
   trend?: { state?: string; reason?: string; conditions?: Record<string, boolean> };
   levels?: Record<string, number | null>;
   events?: MarketEvent[];
+  patterns?: PatternDetection[];
   missing_inputs?: string[];
   data_quality?: { closed_bars?: number; contiguous_bars?: number; gaps?: number; missing_bars?: number; stale?: boolean };
+}
+
+export interface PatternDetection {
+  pattern: string;
+  state: string;
+  end_bar_open_ms?: number;
+  key_levels?: Record<string, number | boolean | null>;
+  invalidation?: string;
+  note?: string;
 }
 
 export interface Alignment {
@@ -213,9 +223,55 @@ export interface ChallengeResponse {
   fallback_reason?: string;
 }
 
+export interface VisionCheck {
+  check?: string;
+  result?: string;
+  expected?: string;
+  read?: string[];
+  timeframe?: string;
+  read_median?: number;
+  exchange_range_last_300_bars?: number[];
+  reason?: string;
+  note?: string;
+}
+
+export interface LocalVisionAnalysis {
+  method?: string;
+  label?: string;
+  status?: string;
+  reason?: string;
+  privacy?: string;
+  image?: { width?: number; height?: number };
+  geometry?: {
+    state?: string;
+    candles_detected?: number;
+    green?: number;
+    red?: number;
+    visual_drift?: string;
+    last_visible_candle_color?: string;
+    note?: string;
+  };
+  ocr?: {
+    status?: string;
+    reason?: string;
+    mean_confidence?: number | null;
+    confidence_note?: string;
+    parsed?: {
+      symbols?: string[];
+      timeframes?: string[];
+      indicator_labels?: string[];
+      price_axis_labels?: number[];
+      market_hint?: string | null;
+    };
+  };
+  cross_checks?: VisionCheck[];
+  ambiguities?: string[];
+}
+
 export interface VisionResponse {
   route?: string;
   fallback_reason?: string;
+  local_analysis?: LocalVisionAnalysis;
   visual_hypotheses?: { label?: string; text?: string; model?: string; estimated_cost_usd?: number | null } | null;
 }
 
@@ -318,8 +374,21 @@ export interface UsageRow {
   lat: number | null;
 }
 
+export interface ReportSummary {
+  id: string;
+  created_at: number;
+  instrument_key: string;
+  title: string;
+}
+
+export interface ReportsResponse {
+  reports: ReportSummary[];
+}
+
 export interface UsageResponse {
   since_ms: number;
+  cache_hits?: number;
+  cache_hit_rate?: number | null;
   by_feature_model: UsageRow[];
   total_tokens: number;
   total_cost_usd: number;

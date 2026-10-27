@@ -74,8 +74,10 @@ PROFILES: tuple[Profile, ...] = (
     _P("brandt", "Peter Brandt", "Classical chart patterns, market structure, invalidation",
        ("futures", "fx", "crypto"), ("1d", "1w"), ("1w",), (), (OHLCV,), "published_book",
        "Diary of a Professional Commodity Trader (2011): classical patterns on daily/weekly charts.",
-       limitations=("Pattern recognition is discretionary; no mechanical rule set is published.",)),
-    _P("livermore", "Jesse Livermore", "Pivotal points, trend behaviour, price leadership",
+       "experimental", "brandt_classical_patterns",
+       ("Pattern recognition is discretionary; no mechanical rule set is published. Geometric detectors "
+        "approximate it and also fire on random data.",)),
+    _P("livermore", "Jesse Livermore", "Pivotal points, trend behavior, price leadership",
        ("equity", "commodity"), ("1d",), (), (), (OHLCV,), "published_book",
        "How to Trade in Stocks (1940): pivotal points from daily price records."),
     _P("oneil", "William J. O'Neil", "CAN SLIM, growth and institutional accumulation", ("equity",),
@@ -100,21 +102,25 @@ PROFILES: tuple[Profile, ...] = (
        "The Original Turtle Trading Rules (C. Faith, 2003) and Way of the Turtle (2007), written by "
        "former Turtles, not by Dennis.", "experimental", "turtle_breakout",
        ("Evaluated on closed daily bars; the original rules entered intraday on the breakout price.",
-        "Position sizing and portfolio limits are not modelled.")),
+        "Position sizing and portfolio limits are not modeled.")),
     _P("seykota", "Ed Seykota", "Systematic trends, risk and position sizing", ("futures",), (), (),
        UNVERIFIED, (OHLCV,), "unverified",
        "Interviews (Market Wizards); exact system rules and intervals are not public."),
     _P("raschke", "Linda Bradford Raschke", "Short-term and swing setups", ("futures", "equity"),
        ("1d",), (), UNVERIFIED, (OHLCV,), "published_book",
-       "Street Smarts (1995, with L. Connors): daily setups; intraday variants not verified here."),
+       "Street Smarts (1995, with L. Connors): daily setups; intraday variants not verified here.",
+       "experimental", "raschke_holy_grail",
+       ("Only the Holy Grail setup (ADX > 30 rising, pullback to the 20 EMA) is evaluated.",)),
     _P("bnf", "Takashi Kotegawa (B.N.F.)", "Short-term reactions, deviation from moving average",
        ("equity",), ("1d",), (), UNVERIFIED, (OHLCV,), "secondary_public",
        "Media interviews describe deviation from the 25-day MA; no primary written rules."),
     _P("cis", "cis (Japan)", "Tactical trend/momentum and position management", ("equity",), (), (),
        UNVERIFIED, (OHLCV,), "unverified", "Media coverage and posts; no documented rule set."),
-    _P("williams", "Larry Williams", "Short-term price behaviour and volatility breakouts", ("futures",),
+    _P("williams", "Larry Williams", "Short-term price behavior and volatility breakouts", ("futures",),
        ("1d",), (), (), (OHLCV,), "published_book",
-       "Long-Term Secrets to Short-Term Trading (1999): daily-bar volatility breakouts."),
+       "Long-Term Secrets to Short-Term Trading (1999): daily-bar volatility breakouts.",
+       "experimental", "williams_volatility_breakout",
+       ("Only the open + k x prior-range breakout is evaluated; the book's filters and sizing are not.",)),
     _P("breitstein", "Lance Breitstein", "Intraday catalysts, execution and risk", ("equity",), (), (),
        UNVERIFIED, (OHLCV, CATALYSTS), "secondary_public", "Public talks/interviews; intraday focus."),
     _P("hougaard", "Tom Hougaard", "Price action and trading psychology", ("equity_index",), (), (),
@@ -213,7 +219,7 @@ def assess(profile: Profile, instrument: InstrumentIdentity, analysis_timeframe:
                          "this methodology's native signal (e.g. 30 weekly bars ≠ 30 hourly bars).")
         a.offered_routes = [
             {"mode": "NATIVE", "description": f"Evaluate on {native_tf} as documented."},
-            {"mode": "HYBRID", "description": f"{native_tf} methodology context + separately labelled "
+            {"mode": "HYBRID", "description": f"{native_tf} methodology context + separately labeled "
                                               f"{analysis_timeframe} tactical rules you define."},
             {"mode": "ADAPTED", "description": f"Fork a versioned, unvalidated {analysis_timeframe} adaptation "
                                                "(preview + approval required; original stays unchanged)."},

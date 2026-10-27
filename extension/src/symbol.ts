@@ -23,8 +23,8 @@ export function isMarket(value: unknown): value is Market {
   return value === "usdm_perpetual" || value === "spot";
 }
 
-/** Normalise user-typed text into a symbol, or null if it is not a valid symbol. */
-export function normaliseSymbol(raw: string): string | null {
+/** Normalize user-typed text into a symbol, or null if it is not a valid symbol. */
+export function normalizeSymbol(raw: string): string | null {
   const s = raw.trim().toUpperCase().replace(/[\s/_-]/g, "");
   return isValidSymbol(s) ? s : null;
 }

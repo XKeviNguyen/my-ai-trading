@@ -74,7 +74,7 @@ def test_schema_rejects_unknown_fields_float_equality_and_oversize():
         {**base, "condition": {**base["condition"], "op": "=="}},
         {**base, "condition": {**base["condition"], "right": float("nan")}},
         {**base, "condition": {**base["condition"], "left": {"name": "sma", "timeframe": "1h"}}},
-        {**base, "condition": {**base["condition"], "left": {"name": "close", "timeframe": "1M"}}},
+        {**base, "condition": {**base["condition"], "left": {"name": "close", "timeframe": "2M"}}},
         {**base, "name": "<script>"},
         {**base, "condition": {"kind": "all", "items": [base["condition"]] * 17}},
     ):
@@ -140,3 +140,57 @@ def test_preview_is_human_readable_and_hash_is_stable():
     assert "on each CLOSED 4h bar" == pv["when"]
     assert "SMA(25) on 4h" in pv["condition"] and "trend on 1d is UP" in pv["condition"]
     assert compile_prompts([PRD_EXAMPLE]).rule.rule_hash() == rule.rule_hash()
+
+
+def test_monthly_timeframe_in_prompts_is_not_confused_with_minutes():
+    p = compile_prompts(["1M close above SMA12 and 1m close above EMA20"])
+    left, right = p.rule.condition.items
+    assert left.left.timeframe == "1M" and right.left.timeframe == "1m"
+    assert compile_prompts(["monthly close above SMA10"]).rule.trigger_timeframe == "1M"
+
+
+def test_new_indicator_phrases_compile_and_evaluate():
+    p = compile_prompts(["daily ADX above 25", "also require MACD crosses above signal on 1d",
+                         "and daily close above the upper Bollinger band"])
+    kinds = [(c.left.name, c.op, c.right) for c in p.rule.condition.items]
+    assert kinds == [("adx", ">", 25.0), ("macd_histogram", "crosses_above", 0.0), ("bollinger_percent_b", ">", 1.0)]
+    assert any("12/26/9" in a for a in p.assumptions) and any("20 periods" in a for a in p.assumptions)
+    s = series_from_closes(uptrend_closes(300))
+    r = evaluate(p.rule, _getter(**{"1d": s}), as_of_ms=s.candles[-1].close_time_ms + 1)
+    assert r["result"] in ("MATCH", "NO_MATCH") and len(r["leaves"]) == 3
+    assert all(leaf["left"] is not None for leaf in r["leaves"])
+    with pytest.raises(ValidationError):
+        MetricRef(name="macd_histogram", period=12, timeframe="1d")
+
+
+@pytest.mark.parametrize("prompt", [
+    "close above the upper Bollinger band on 1d",   # trailing timeframe
+    "daily MACD crosses above signal",              # leading timeframe
+    "MACD crosses above the signal line on 1d",
+    "1d MACD histogram below zero",
+    "daily RSI below 30",
+])
+def test_explicit_indicator_timeframe_is_never_replaced_by_the_chart_default(prompt):
+    p = compile_prompts([prompt], default_timeframe="1h")
+    assert p.rule is not None, p.as_dict()
+    assert p.rule.condition.left.timeframe == "1d"
+    assert not any("assumed chart timeframe" in a for a in p.assumptions)
+
+
+def test_bare_macd_zero_test_uses_the_macd_line_not_the_histogram():
+    from my_ai_trading.indicators import macd
+    from my_ai_trading.rules import metric_value
+    line = compile_prompts(["MACD above zero on 1d"]).rule.condition
+    explicit_line = compile_prompts(["MACD line above zero on 1d"]).rule.condition
+    hist = compile_prompts(["MACD histogram above zero on 1d"]).rule.condition
+    assert line.left.name == explicit_line.left.name == "macd_line"
+    assert hist.left.name == "macd_histogram"
+    # A slowing uptrend: the MACD line stays positive while the histogram turns negative.
+    closes = [100 * 1.01 ** i for i in range(80)] + [100 * 1.01 ** 79] * 8
+    tail = tuple(candles_from_closes(closes))
+    expected = macd(closes)
+    assert expected["macd"] > 0 > expected["histogram"]
+    assert metric_value(line.left, tail) == pytest.approx(expected["macd"])
+    assert metric_value(hist.left, tail) == pytest.approx(expected["histogram"])
+    with pytest.raises(ValidationError):
+        MetricRef(name="macd_line", period=12, timeframe="1d")

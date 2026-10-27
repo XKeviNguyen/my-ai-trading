@@ -5,7 +5,7 @@ import type { App, View } from "../app.js";
 import { badge, h, list, setChildren, status } from "../dom.js";
 import { fmtAge, fmtJson, fmtNum } from "../format.js";
 import { marketLabel } from "../symbol.js";
-import type { Alignment, AnalysisResponse, MarketEvent, Perspective, Snapshot, TimeframeReport } from "../types.js";
+import type { Alignment, AnalysisResponse, MarketEvent, Perspective, Snapshot, TimeframeReport, PatternDetection } from "../types.js";
 
 export function tfTone(s: string | undefined): "ok" | "warn" | "err" | "muted" {
   if (s === "OK") return "ok";
@@ -35,6 +35,20 @@ function kv(rows: [string, string | HTMLElement][]): HTMLElement {
     "dl",
     { class: "kv" },
     rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)]),
+  );
+}
+
+/** Recent geometric pattern detections; always shown with their caveat and invalidation. */
+export function patternsList(patterns: PatternDetection[] | undefined): HTMLElement | null {
+  if (!patterns || patterns.length === 0) return null;
+  return h(
+    "details",
+    null,
+    h("summary", null, `Patterns (${patterns.length}) — geometric detections, not signals`),
+    h("p", { class: "small muted" }, "These detectors also fire on random data; treat them as prompts to look."),
+    h("ul", { class: "plain" }, patterns.map((p) =>
+      h("li", null, badge(p.state, p.state === "FAILED" ? "muted" : "info"), " ", p.pattern.replaceAll("_", " ").toLowerCase(),
+        p.invalidation ? h("div", { class: "small" }, `Invalidation: ${p.invalidation}`) : null))),
   );
 }
 
@@ -78,10 +92,14 @@ function timeframeCard(tf: string, r: TimeframeReport, now: number): HTMLElement
       ["SMA200", fmtNum(iv["sma200"])],
       ["RSI14 (Wilder)", fmtNum(iv["rsi14_wilder"], 4)],
       ["Volume ratio (20)", fmtNum(iv["volume_ratio_20"], 4)],
+      ["MACD histogram (12/26/9)", fmtNum(iv["macd_histogram"])],
+      ["Bollinger %B (20, 2)", fmtNum(iv["bollinger_20_2_percent_b"], 4)],
+      ["ADX14 (+DI / −DI)", `${fmtNum(iv["adx14"], 4)} (${fmtNum(iv["plus_di14"], 4)} / ${fmtNum(iv["minus_di14"], 4)})`],
     ]),
     r.trend?.reason ? h("p", { class: "small muted" }, r.trend.reason) : null,
     h("h5", null, "Events"),
     eventsList(r.events),
+    patternsList(r.patterns),
     r.missing_inputs && r.missing_inputs.length
       ? h("details", null, h("summary", null, `Data notes (${r.missing_inputs.length})`), list(r.missing_inputs))
       : null,

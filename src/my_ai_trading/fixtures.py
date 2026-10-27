@@ -14,6 +14,7 @@ def candles_from_closes(closes: Sequence[float], timeframe: str = "1d", *, start
                         volumes: Sequence[float] | None = None, spread: float = 0.01) -> list[Candle]:
     tf = Timeframe(timeframe)
     start = start_ms if start_ms is not None else (MONDAY_2024_12_30_MS if timeframe == "1w" else EPOCH_2025_MS)
+    # EPOCH_2025_MS is also the 1st of a month, so it is a valid monthly open.
     out: list[Candle] = []
     prev = closes[0]
     for i, close in enumerate(closes):
@@ -21,8 +22,8 @@ def candles_from_closes(closes: Sequence[float], timeframe: str = "1d", *, start
         hi = max(open_, close) * (1 + spread)
         lo = min(open_, close) * (1 - spread)
         vol = volumes[i] if volumes is not None else 1_000_000.0
-        t = start + i * tf.duration_ms
-        out.append(Candle(t, t + tf.duration_ms - 1, open_, hi, lo, close, vol, vol * close))
+        t = start if i == 0 else tf.next_open_ms(out[-1].open_time_ms)
+        out.append(Candle(t, tf.next_open_ms(t) - 1, open_, hi, lo, close, vol, vol * close))
         prev = close
     return out
 

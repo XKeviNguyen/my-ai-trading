@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import Path as PathParam
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,6 +32,7 @@ from .methodology import PROFILES
 from .monitor import Monitor
 from .perspectives import evaluate_perspectives
 from .providers.binance import BinancePublic, MarketDataError, RateLimitedError
+from .reports import to_markdown
 from .rules import StrategyRule, evaluate, preview
 from .store import LOCAL_USER, Store, UserSettings, default_db_path
 
@@ -159,6 +162,13 @@ class ChallengeRequest(BaseModel):
     deep: bool = False
 
 
+class ReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(pattern=r"^[A-Z0-9]{3,20}$")
+    market: Market = "usdm_perpetual"
+    analysis_timeframe: str | None = Field(default=None, max_length=4)
+
+
 class BacktestConfigBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     hold_bars: int = Field(ge=1, le=500)
@@ -266,10 +276,8 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
         _, snap = snapshot_for(symbol, market, tfs(timeframes))
         return public(snap)
 
-    @app.get("/api/v1/analysis", dependencies=L)
-    def analysis(symbol: str = Query(pattern=r"^[A-Z0-9]{3,20}$"), market: Market = "usdm_perpetual",
-                 analysis_timeframe: str | None = Query(default=None, max_length=4),
-                 timeframes: str | None = Query(default=None, max_length=64)) -> dict[str, Any]:
+    def build_analysis(symbol: str, market: str, analysis_timeframe: str | None,
+                       timeframes: str | None) -> tuple[Any, dict[str, Any]]:
         settings = store.settings()
         atf = analysis_timeframe or settings.analysis_timeframe
         upstream(Timeframe, atf)
@@ -283,7 +291,33 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
             return series_cache[tf]
         selections = [s.model_dump() for s in settings.selected_methodologies]
         persp = upstream(evaluate_perspectives, inst, atf, selections, get, as_of_ms=snap["as_of_ms"])
-        return {"snapshot": public(snap), "perspectives": persp, "selected_count": len(selections)}
+        return inst, {"snapshot": public(snap), "perspectives": persp, "selected_count": len(selections)}
+
+    @app.get("/api/v1/analysis", dependencies=L)
+    def analysis(symbol: str = Query(pattern=r"^[A-Z0-9]{3,20}$"), market: Market = "usdm_perpetual",
+                 analysis_timeframe: str | None = Query(default=None, max_length=4),
+                 timeframes: str | None = Query(default=None, max_length=64)) -> dict[str, Any]:
+        return build_analysis(symbol, market, analysis_timeframe, timeframes)[1]
+
+    @app.post("/api/v1/reports", dependencies=L)
+    def save_report(body: ReportRequest) -> dict[str, Any]:
+        inst, result = build_analysis(body.symbol, body.market, body.analysis_timeframe, None)
+        title = f"{inst.symbol} {inst.market_type} analysis {result['snapshot']['as_of_utc']}"
+        return {"id": store.save_report(result, title=title, instrument_key=inst.key), "title": title}
+
+    @app.get("/api/v1/reports", dependencies=A)
+    def list_reports() -> dict[str, Any]:
+        return {"reports": store.reports()}
+
+    @app.get("/api/v1/reports/{rid}", dependencies=A)
+    def get_report(rid: str = PathParam(pattern=r"^[0-9a-f]{12}$"), format: Literal["json", "markdown"] = "json"):
+        saved = store.report(rid)
+        if saved is None:
+            raise HTTPException(404, "report not found")
+        if format == "markdown":
+            return PlainTextResponse(to_markdown(saved), media_type="text/markdown; charset=utf-8",
+                                     headers={"Content-Disposition": f'attachment; filename="report-{rid}.md"'})
+        return saved
 
     @app.get("/api/v1/settings", dependencies=A)
     def get_settings() -> dict[str, Any]:
@@ -444,7 +478,7 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
         if symbol:
             _, snap = await asyncio.to_thread(snapshot_for, symbol, market, ("1h", "1d"))
         try:
-            return await asyncio.to_thread(copilot.analyze_chart_image, data, question, snap)
+            return await asyncio.to_thread(copilot.analyze_chart_image, data, question, snap, expected_symbol=symbol)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

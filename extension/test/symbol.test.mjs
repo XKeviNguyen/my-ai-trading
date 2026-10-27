@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isValidSymbol, normaliseSymbol, parseBinanceUrl } from "../build/src/symbol.js";
+import { isValidSymbol, normalizeSymbol, parseBinanceUrl } from "../build/src/symbol.js";
 
 test("futures URLs → usdm_perpetual", () => {
   assert.deepEqual(parseBinanceUrl("https://www.binance.com/en/futures/SANDUSDT"), { symbol: "SANDUSDT", market: "usdm_perpetual" });
@@ -47,14 +47,14 @@ test("unsupported or malicious URLs → null", () => {
   for (const u of bad) assert.equal(parseBinanceUrl(u), null, String(u));
 });
 
-test("symbol validation and normalisation", () => {
+test("symbol validation and normalization", () => {
   assert.equal(isValidSymbol("SANDUSDT"), true);
   assert.equal(isValidSymbol("sandusdt"), false);
   assert.equal(isValidSymbol("SAND USDT"), false);
   assert.equal(isValidSymbol("AB"), false);
   assert.equal(isValidSymbol(42), false);
-  assert.equal(normaliseSymbol(" sand/usdt "), "SANDUSDT");
-  assert.equal(normaliseSymbol("sand_usdt"), "SANDUSDT");
-  assert.equal(normaliseSymbol("<img src=x>"), null);
-  assert.equal(normaliseSymbol(""), null);
+  assert.equal(normalizeSymbol(" sand/usdt "), "SANDUSDT");
+  assert.equal(normalizeSymbol("sand_usdt"), "SANDUSDT");
+  assert.equal(normalizeSymbol("<img src=x>"), null);
+  assert.equal(normalizeSymbol(""), null);
 });

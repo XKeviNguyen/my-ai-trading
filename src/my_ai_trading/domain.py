@@ -6,6 +6,7 @@ All times are UTC epoch milliseconds. A candle covers [open_time_ms, open_time_m
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import StrEnum
 from math import isfinite
 from typing import Any, Iterable
@@ -20,7 +21,9 @@ _DURATIONS_MS: dict[str, int] = {
     "30m": 30 * MINUTE_MS, "1h": HOUR_MS, "2h": 2 * HOUR_MS, "4h": 4 * HOUR_MS,
     "6h": 6 * HOUR_MS, "8h": 8 * HOUR_MS, "12h": 12 * HOUR_MS, "1d": DAY_MS,
     "3d": 3 * DAY_MS, "1w": 7 * DAY_MS,
+    "1M": 31 * DAY_MS,  # calendar month: nominal upper bound only; exact bounds use next_open_ms
 }
+CALENDAR_CODES = frozenset({"1M"})
 
 
 class MarketType(StrEnum):
@@ -61,7 +64,39 @@ class Timeframe:
 
     @property
     def duration_ms(self) -> int:
+        """Exact bar length for fixed intervals; a nominal upper bound for calendar months.
+        Use next_open_ms / next_bar_close_ms / bars_between for anything that must be exact."""
         return _DURATIONS_MS[self.code]
+
+    @property
+    def is_calendar(self) -> bool:
+        return self.code in CALENDAR_CODES
+
+    def next_open_ms(self, open_ms: int) -> int:
+        """Open time of the bar after the bar that opens at ``open_ms`` (UTC calendar for 1M)."""
+        if not self.is_calendar:
+            return open_ms + self.duration_ms
+        d = datetime.fromtimestamp(open_ms / 1000, tz=timezone.utc)
+        y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+        return int(datetime(y, m, 1, tzinfo=timezone.utc).timestamp() * 1000)
+
+    def is_aligned_open(self, open_ms: int) -> bool:
+        if not self.is_calendar:
+            return True  # fixed intervals are checked by spacing
+        d = datetime.fromtimestamp(open_ms / 1000, tz=timezone.utc)
+        return (d.day, d.hour, d.minute, d.second, d.microsecond) == (1, 0, 0, 0, 0)
+
+    def next_bar_close_ms(self, close_ms: int) -> int:
+        """Last millisecond of the bar after the bar that closes at ``close_ms``."""
+        return self.next_open_ms(close_ms + 1) - 1
+
+    def bars_between(self, earlier_open_ms: int, later_open_ms: int) -> int:
+        """Whole bars from one bar open to a later bar open."""
+        if not self.is_calendar:
+            return (later_open_ms - earlier_open_ms) // self.duration_ms
+        a = datetime.fromtimestamp(earlier_open_ms / 1000, tz=timezone.utc)
+        b = datetime.fromtimestamp(later_open_ms / 1000, tz=timezone.utc)
+        return (b.year - a.year) * 12 + (b.month - a.month)
 
     @classmethod
     def all_codes(cls) -> tuple[str, ...]:
@@ -153,19 +188,20 @@ class CandleSeries:
     gaps: tuple[tuple[int, int], ...] = field(default=(), init=False)
 
     def __post_init__(self) -> None:
-        dur = self.timeframe.duration_ms
+        tf = self.timeframe
         gaps: list[tuple[int, int]] = []
         for c in self.candles:
-            if c.close_time_ms - c.open_time_ms != dur - 1:
-                raise ValueError(f"Candle duration does not match timeframe {self.timeframe}")
+            if c.close_time_ms != tf.next_open_ms(c.open_time_ms) - 1 or not tf.is_aligned_open(c.open_time_ms):
+                raise ValueError(f"Candle duration does not match timeframe {tf}")
         for prev, cur in zip(self.candles, self.candles[1:]):
             step = cur.open_time_ms - prev.open_time_ms
             if step <= 0:
                 raise ValueError("Candles must be strictly ordered and unique")
-            if step % dur:
+            if not tf.is_calendar and step % tf.duration_ms:
                 raise ValueError("Candle open times are misaligned for the timeframe")
-            if step != dur:
-                gaps.append((prev.open_time_ms + dur, cur.open_time_ms))
+            expected = tf.next_open_ms(prev.open_time_ms)
+            if cur.open_time_ms != expected:
+                gaps.append((expected, cur.open_time_ms))
         object.__setattr__(self, "gaps", tuple(gaps))
 
     @classmethod
@@ -177,8 +213,7 @@ class CandleSeries:
         return cls(instrument, tf, closed)
 
     def missing_bars(self) -> int:
-        dur = self.timeframe.duration_ms
-        return sum((end - start) // dur for start, end in self.gaps)
+        return sum(self.timeframe.bars_between(start, end) for start, end in self.gaps)
 
     def contiguous_tail(self) -> tuple[Candle, ...]:
         """Longest run of consecutive bars ending at the latest bar (indicators never span a gap)."""
@@ -195,10 +230,9 @@ class CandleSeries:
         """Stale when the newest closed bar is older than one full bar plus grace."""
         if not self.candles:
             return True
-        dur = self.timeframe.duration_ms
-        grace = min(dur // 2, 5 * MINUTE_MS) if grace_ms is None else grace_ms
-        # The bar after the newest one should have closed by last.close + dur.
-        return now_ms - self.candles[-1].close_time_ms > dur + grace
+        grace = min(self.timeframe.duration_ms // 2, 5 * MINUTE_MS) if grace_ms is None else grace_ms
+        # The bar after the newest one should have closed by now.
+        return now_ms > self.timeframe.next_bar_close_ms(self.candles[-1].close_time_ms) + 1 + grace
 
     def up_to(self, as_of_ms: int) -> "CandleSeries":
         """View containing only bars closed at ``as_of_ms`` — used for replay without look-ahead."""

@@ -2,12 +2,13 @@
 
 Routing order of least justified cost: deterministic answer → (consent + budget gates) → LLM at
 low effort → LLM at high effort / vision only on explicit request. Facts always come from the
-deterministic snapshot; model output is returned separately and labelled as interpretation.
+deterministic snapshot; model output is returned separately and labeled as interpretation.
 Prompts, market data, screenshots and model output are untrusted data, never instructions to act.
 """
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -26,6 +27,7 @@ from .thesis import challenge
 # Without a model id the copilot stays deterministic; without prices, spend is tracked in tokens only.
 MODEL_ENV, PRICES_ENV = "MY_AI_TRADING_MODEL", "MY_AI_TRADING_PRICES"
 MAX_QUESTION_CHARS = 4_000
+CACHE_TTL_MS = 6 * 3_600_000  # the basis includes closed-bar times, so new candles miss the cache anyway
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 IMAGE_MAGIC = {b"\x89PNG\r\n\x1a\n": "image/png", b"\xff\xd8\xff": "image/jpeg"}
 
@@ -159,19 +161,32 @@ class Copilot:
                 return "Monthly AI dollar budget would be exceeded; showing deterministic analysis instead."
         return None
 
-    def _call(self, feature: str, content: list[dict[str, Any]], *, deep: bool) -> tuple[LLMResult | None, str | None]:
+    def _call(self, feature: str, content: list[dict[str, Any]], *, deep: bool,
+              cache_basis: dict[str, Any] | None = None) -> tuple[LLMResult | None, str | None]:
         max_tokens = 16_000 if deep else 4_000
         est_in = sum(len(c.get("text", "")) for c in content) // 3 + (1_600 if any(c["type"] == "image" for c in content) else 0)
-        with self._budget_lock:  # serialise so concurrent requests cannot jointly overspend
-            return self._call_locked(feature, content, deep=deep, est_in=est_in, max_tokens=max_tokens)
+        with self._budget_lock:  # serialize so concurrent requests cannot jointly overspend
+            return self._call_locked(feature, content, deep=deep, est_in=est_in, max_tokens=max_tokens,
+                                     cache_basis=cache_basis)
 
     def _call_locked(self, feature: str, content: list[dict[str, Any]], *, deep: bool, est_in: int,
-                     max_tokens: int) -> tuple[LLMResult | None, str | None]:
+                     max_tokens: int, cache_basis: dict[str, Any] | None) -> tuple[LLMResult | None, str | None]:
         reason = self._gate(deep=deep, est_input_tokens=est_in, max_tokens=max_tokens)
+        consented = self.provider is not None and self.store.settings(self.user).llm_data_consent
+        model = getattr(self.provider, "model", getattr(self.provider, "name", ""))
+        key = None
+        if cache_basis is not None and consented:
+            key = hashlib.sha256(json.dumps([self.user, feature, model, deep, cache_basis], sort_keys=True,
+                                            default=str).encode()).hexdigest()
+            hit = self.store.cache_get(key, self.user)
+            if hit is not None and not (deep and not self.store.settings(self.user).deep_analysis_opt_in):
+                self.store.record_ai_usage(user=self.user, feature=feature, provider=self.provider.name,
+                                           model=hit["model"], input_tokens=0, output_tokens=0, cost_usd=0.0,
+                                           latency_ms=0, status="cache_hit")
+                return LLMResult(hit["text"], hit["model"], 0, 0, "cache_hit", 0), None
         if reason:
             return None, reason
         assert self.provider is not None
-        model = getattr(self.provider, "model", self.provider.name)
         try:
             res = self.provider.complete(system=SYSTEM_PROMPT, content=content, effort="high" if deep else "low",
                                          max_tokens=max_tokens)
@@ -185,6 +200,8 @@ class Copilot:
                                    latency_ms=res.latency_ms, status=res.stop_reason or "ok")
         if res.stop_reason == "refusal":
             return None, "The model declined this request; deterministic analysis shown instead."
+        if key is not None:
+            self.store.cache_put(key, self.user, {"text": res.text, "model": res.model}, ttl_ms=CACHE_TTL_MS)
         return res, None
 
     # ---- features ----
@@ -199,7 +216,8 @@ class Copilot:
         context = {"snapshot": _public(snapshot), "perspectives": perspectives}
         content = [{"type": "text", "text": "<snapshot>\n" + json.dumps(context, default=str, separators=(",", ":"))
                     + "\n</snapshot>\n<question>\n" + question + "\n</question>"}]
-        res, reason = self._call("copilot_deep" if deep else "copilot", content, deep=deep)
+        res, reason = self._call("copilot_deep" if deep else "copilot", content, deep=deep,
+                                 cache_basis={"question": question, **_facts_basis(snapshot, perspectives)})
         if res is None:
             out["fallback_reason"] = reason
             return out
@@ -219,7 +237,9 @@ class Copilot:
         content = [{"type": "text", "text": "<evidence_audit>\n" + json.dumps(audit, default=str) +
                     "\n</evidence_audit>\nWrite an independent bull case and an independent bear case from this audit "
                     "only, then the observations that would change the conclusion. No probabilities."}]
-        res, reason = self._call("challenge_deep", content, deep=True)
+        res, reason = self._call("challenge_deep", content, deep=True,
+                                 cache_basis={"thesis": thesis[:MAX_QUESTION_CHARS], "focus": focus_timeframe,
+                                              **_facts_basis(snapshot, None)})
         if res is None:
             out["fallback_reason"] = reason
             return out
@@ -229,21 +249,31 @@ class Copilot:
                                                                                  res.output_tokens)})
         return out
 
-    def analyze_chart_image(self, image: bytes, question: str, snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    def analyze_chart_image(self, image: bytes, question: str, snapshot: dict[str, Any] | None, *,
+                            expected_symbol: str | None = None) -> dict[str, Any]:
+        """Local OpenCV/OCR analysis first (free); model vision only behind the consent/opt-in/budget gates."""
+        from .chartvision import analyze_screenshot  # local import: chartvision imports this module
         media_type = validate_image(image)
+        local = analyze_screenshot(image, expected_symbol=expected_symbol, snapshot=snapshot)
+        out: dict[str, Any] = {"route": "local", "local_analysis": local, "visual_hypotheses": None}
         content = [{"type": "image", "source": {"type": "base64", "media_type": media_type,
                                                 "data": base64.standard_b64encode(image).decode()}},
                    {"type": "text", "text": "Describe visible chart structure, annotations and patterns as hypotheses. "
-                    "Exchange data below is authoritative for any number; flag disagreements.\n<snapshot>\n"
-                    + json.dumps(_public(snapshot or {}), default=str) + "\n</snapshot>\n<question>\n"
-                    + (question or "")[:MAX_QUESTION_CHARS] + "\n</question>"}]
-        res, reason = self._call("vision", content, deep=True)
+                    "Exchange data below is authoritative for any number; flag disagreements.\n<local_analysis>\n"
+                    + json.dumps({k: local.get(k) for k in ("geometry", "ocr", "cross_checks")}, default=str)
+                    + "\n</local_analysis>\n<snapshot>\n" + json.dumps(_public(snapshot or {}), default=str)
+                    + "\n</snapshot>\n<question>\n" + (question or "")[:MAX_QUESTION_CHARS] + "\n</question>"}]
+        res, reason = self._call("vision", content, deep=True,
+                                 cache_basis={"image_sha256": hashlib.sha256(image).hexdigest(), "question": question,
+                                              **_facts_basis(snapshot or {}, None)})
         if res is None:
-            return {"route": "none", "fallback_reason": reason, "visual_hypotheses": None}
-        return {"route": "vision", "visual_hypotheses": {
+            out["fallback_reason"] = reason
+            return out
+        out.update(route="local+vision", visual_hypotheses={
             "label": "Visual hypotheses from a screenshot — not exact OHLCV; verified only where exchange data agrees",
             "text": res.text, "model": res.model,
-            "estimated_cost_usd": estimate_cost(res.model, res.input_tokens, res.output_tokens)}}
+            "estimated_cost_usd": estimate_cost(res.model, res.input_tokens, res.output_tokens)})
+        return out
 
     def propose_rule(self, prompts: list[str]) -> dict[str, Any]:
         """LLM fallback for prompts the deterministic compiler could not resolve; output is validated data."""
@@ -262,6 +292,15 @@ class Copilot:
             payload = None
         proposal = from_llm_json(payload)
         return {**proposal.as_dict(), "model": res.model}
+
+
+def _facts_basis(snapshot: dict[str, Any], perspectives: dict[str, Any] | None) -> dict[str, Any]:
+    """What the answer depends on: instrument, closed-bar times and states, never the request clock."""
+    return {"instrument": snapshot.get("instrument", {}).get("key"),
+            "bars": {tf: [r.get("status"), r.get("bar_close_time_utc")] for tf, r in snapshot.get("timeframes", {}).items()},
+            # Full fingerprint: an evaluation on another timeframe can change levels while its state stays the same.
+            "perspectives": [hashlib.sha256(json.dumps(p, sort_keys=True, default=str).encode()).hexdigest()
+                             for p in (perspectives or {}).get("perspectives", [])]}
 
 
 def validate_image(data: bytes) -> str:
@@ -290,6 +329,9 @@ def deterministic_summary(snapshot: dict[str, Any], perspectives: dict[str, Any]
                      "sma50": iv.get("sma50"), "sma200": iv.get("sma200"), "rsi14": iv.get("rsi14_wilder"),
                      "atr14_wilder": iv.get("atr14_wilder"), "volume_ratio_20": iv.get("volume_ratio_20"),
                      "levels": r.get("levels"), "events": [e["type"] for e in r.get("events", [])],
+                     "macd_histogram": iv.get("macd_histogram"), "adx14": iv.get("adx14"),
+                     "bollinger_percent_b": iv.get("bollinger_20_2_percent_b"),
+                     "recent_patterns": [f"{d['pattern']} {d['state']}" for d in r.get("patterns", [])],
                      "missing_inputs": r.get("missing_inputs", [])})
     persp = []
     for p in (perspectives or {}).get("perspectives", []):

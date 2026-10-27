@@ -9,7 +9,8 @@ from typing import Any, Callable
 
 from .domain import CandleSeries
 from .engine import utc_iso
-from .indicators import prior_high, prior_low, sma, true_ranges
+from .indicators import adx, ema, prior_high, prior_low, sma, true_ranges
+from .patterns import recent_patterns
 
 # Calendar model: crypto trades 24x7, so 52 weeks = 364 daily bars and one month ≈ 30 daily bars.
 # Equity sources use ~252 sessions/year; that calendar is not implemented yet.
@@ -206,9 +207,91 @@ def _finish_darvas(out: dict[str, Any], tail) -> dict[str, Any]:
     return out
 
 
+WILLIAMS_RANGE_FRACTION = 0.6  # the book tests several fractions of the prior range; 0.6 is a choice made here
+
+
+def williams_volatility_breakout(series: CandleSeries) -> dict[str, Any]:
+    """Did the last closed day trade beyond open +/- k x the prior day's range? Closed-bar evaluation."""
+    out = _base(series, "williams_volatility_breakout", "1")
+    if series.timeframe.code != "1d":
+        raise ValueError("The volatility breakout is evaluated on daily bars")
+    tail = series.contiguous_tail()
+    if len(tail) < 2:
+        out.update(state="INSUFFICIENT_DATA", reason="needs 2+ contiguous daily bars")
+        return out
+    prev, last = tail[-2], tail[-1]
+    rng = prev.high - prev.low
+    up, down = last.open + WILLIAMS_RANGE_FRACTION * rng, last.open - WILLIAMS_RANGE_FRACTION * rng
+    hit_up, hit_down = last.high >= up, last.low <= down
+    state = ("BOTH_LEVELS_TOUCHED" if hit_up and hit_down else "UPSIDE_LEVEL_EXCEEDED" if hit_up
+             else "DOWNSIDE_LEVEL_EXCEEDED" if hit_down else "NO_LEVEL_EXCEEDED")
+    out.update(state=state, values={"open": last.open, "prior_range": rng, "upside_level": up,
+                                    "downside_level": down, "high": last.high, "low": last.low, "close": last.close},
+               parameters={"range_fraction": WILLIAMS_RANGE_FRACTION,
+                           "parameter_provenance": "the book tests several fractions; this value is a choice made here"},
+               note="Intraday order of the high and low is unknown from daily bars, so BOTH_LEVELS_TOUCHED is ambiguous.",
+               unevaluated_criteria=["day-of-week and market-condition filters", "money management"])
+    return out
+
+
+RASCHKE_ADX_MIN, RASCHKE_ADX_PERIOD, RASCHKE_EMA = 30.0, 14, 20
+
+
+def raschke_holy_grail(series: CandleSeries) -> dict[str, Any]:
+    """Street Smarts "Holy Grail": ADX(14) above 30 and rising, and the last bar touches the 20-period EMA."""
+    out = _base(series, "raschke_holy_grail", "1")
+    if series.timeframe.code != "1d":
+        raise ValueError("The Holy Grail setup is evaluated on daily bars")
+    tail = series.contiguous_tail()
+    now, prev = adx(tail, RASCHKE_ADX_PERIOD), adx(tail[:-1], RASCHKE_ADX_PERIOD)
+    e = ema([c.close for c in tail], RASCHKE_EMA)
+    if now is None or prev is None or e is None:
+        out.update(state="INSUFFICIENT_DATA", reason=f"needs {2 * RASCHKE_ADX_PERIOD + 1}+ contiguous daily bars")
+        return out
+    last = tail[-1]
+    checks = {"adx_above_30": now["adx"] > RASCHKE_ADX_MIN, "adx_rising": now["adx"] > prev["adx"],
+              "bar_touches_ema20": last.low <= e <= last.high}
+    side = "LONG_SIDE" if now["plus_di"] > now["minus_di"] else "SHORT_SIDE"
+    state = f"SETUP_PRESENT_{side}" if all(checks.values()) else "NO_SETUP"
+    out.update(state=state, checks=checks,
+               values={"adx": now["adx"], "previous_adx": prev["adx"], "plus_di": now["plus_di"],
+                       "minus_di": now["minus_di"], "ema20": e, "high": last.high, "low": last.low},
+               parameters={"adx_min": RASCHKE_ADX_MIN, "adx_period": RASCHKE_ADX_PERIOD, "ema": RASCHKE_EMA,
+                           "parameter_provenance": "Street Smarts (1995) description of the setup"},
+               unevaluated_criteria=["entry above/below the touch bar", "stops and exits", "money management"],
+               note="A setup description on closed bars, not an entry instruction.")
+    return out
+
+
+BRANDT_KINDS = {"HEAD_AND_SHOULDERS", "INVERSE_HEAD_AND_SHOULDERS", "ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE",
+                "SYMMETRICAL_TRIANGLE", "RISING_WEDGE", "FALLING_WEDGE", "BULL_FLAG", "BEAR_FLAG"}
+BRANDT_RECENT_BARS = 10
+
+
+def brandt_classical_patterns(series: CandleSeries) -> dict[str, Any]:
+    """Recent classical chart patterns (geometric detectors) on daily bars, with their invalidation."""
+    out = _base(series, "brandt_classical_patterns", "1")
+    if series.timeframe.code != "1d":
+        raise ValueError("Classical patterns are evaluated here on daily bars")
+    if len(series.contiguous_tail()) < 30:
+        out.update(state="INSUFFICIENT_DATA", reason="needs 30+ contiguous daily bars")
+        return out
+    found = [d for d in recent_patterns(series, bars=BRANDT_RECENT_BARS) if d["pattern"] in BRANDT_KINDS]
+    out.update(state="PATTERNS_PRESENT" if found else "NO_RECENT_PATTERN",
+               patterns=[{k: d[k] for k in ("pattern", "state", "end_bar_open_ms", "key_levels", "invalidation")}
+                         for d in found],
+               note="Brandt's pattern reading is discretionary; these are geometric detections, which also fire on "
+                    "random data. Weekly context is not combined here.",
+               unevaluated_criteria=["weekly chart confirmation", "pattern quality judgment", "trade management"])
+    return out
+
+
 EVALUATORS: dict[str, Callable[[CandleSeries], dict[str, Any]]] = {
     "minervini_trend_template": minervini_trend_template,
     "weinstein_stage": weinstein_stage,
     "turtle_breakout": turtle_breakout,
     "darvas_box": darvas_box,
+    "williams_volatility_breakout": williams_volatility_breakout,
+    "raschke_holy_grail": raschke_holy_grail,
+    "brandt_classical_patterns": brandt_classical_patterns,
 }

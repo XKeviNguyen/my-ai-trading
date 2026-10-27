@@ -1,5 +1,7 @@
 // Strategy Studio: compile prompts → preview → dry-run / save draft → explicit rule_hash approval.
 
+import { TIMEFRAMES } from "../api.js";
+
 import type { App, View } from "../app.js";
 import { badge, field, h, list, setChildren, status } from "../dom.js";
 import { fmtJson, fmtMs } from "../format.js";
@@ -114,7 +116,7 @@ export class StudioView implements View {
       "select",
       null,
       h("option", { value: "" }, "None (prompts must state it)"),
-      ["1h", "4h", "1d", "1w"].map((t) => h("option", { value: t }, t)),
+      TIMEFRAMES.map((t) => h("option", { value: t }, t)),
     );
     const llm = h("input", { type: "checkbox" });
     const out = h("div", { "aria-live": "polite" });
@@ -164,7 +166,7 @@ export class StudioView implements View {
       extra.model ? h("p", { class: "mode-label" }, `Proposed by model ${extra.model} — review every condition`) : null,
       extra.reason ? h("p", { class: "small" }, extra.reason) : null,
       r.preview ? previewBlock(r.preview) : null,
-      r.clauses && r.clauses.length ? h("details", null, h("summary", null, "Recognised clauses"), list(r.clauses.map((c) => `${c.kind}: ${c.text}`))) : null,
+      r.clauses && r.clauses.length ? h("details", null, h("summary", null, "Recognized clauses"), list(r.clauses.map((c) => `${c.kind}: ${c.text}`))) : null,
       h("h5", null, "Assumptions"),
       list(r.assumptions),
       r.unresolved && r.unresolved.length ? [h("h5", null, "Unresolved"), list(r.unresolved)] : null,

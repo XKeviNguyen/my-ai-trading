@@ -1,24 +1,25 @@
 // Settings: API token + connection test, watchlist, analysis timeframe, quiet hours, alerts pause,
 // AI consent / deep-analysis opt-in, monthly budgets. Saved with PUT /api/v1/settings (full object).
 
-import { ApiError } from "../api.js";
+
+import { ApiError, TIMEFRAMES } from "../api.js";
 import type { App, View } from "../app.js";
 import { field, h, setChildren, status } from "../dom.js";
 import { clearToken, getToken, setToken } from "../storage.js";
-import { normaliseSymbol, type Market } from "../symbol.js";
+import { normalizeSymbol, type Market } from "../symbol.js";
 import type { UserSettings, WatchItem } from "../types.js";
 
 // The engine writes secrets.token_urlsafe(32) (43 chars) and accepts any file content of 32+ chars.
 export const TOKEN_RE = /^[\x21-\x7e]{32,512}$/;
 
-/** Validate watchlist rows: normalise, drop blanks, reject invalid, dedupe. */
+/** Validate watchlist rows: normalize, drop blanks, reject invalid, dedupe. */
 export function cleanWatchlist(rows: { symbol: string; market: string }[]): { items: WatchItem[]; errors: string[] } {
   const items: WatchItem[] = [];
   const errors: string[] = [];
   const seen = new Set<string>();
   for (const r of rows) {
     if (!r.symbol.trim()) continue;
-    const sym = normaliseSymbol(r.symbol);
+    const sym = normalizeSymbol(r.symbol);
     if (!sym) {
       errors.push(`"${r.symbol.slice(0, 30)}" is not a valid symbol`);
       continue;
@@ -129,7 +130,7 @@ export class SettingsView implements View {
   }
 
   private renderPrefs(s: UserSettings): void {
-    const atf = h("select", null, ["1h", "4h", "1d", "1w"].map((t) => h("option", { value: t }, t)));
+    const atf = h("select", null, TIMEFRAMES.map((t) => h("option", { value: t }, t)));
     atf.value = s.analysis_timeframe;
 
     // watchlist

@@ -167,12 +167,12 @@ def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfi
         raise ValueError("signals must have one entry per candle")
     if not 0 <= start <= end <= n:
         raise ValueError("invalid window")
-    cfg, dur = config, series.timeframe.duration_ms
+    cfg = config
     sign = 1 if cfg.direction == "long" else -1
     f = cfg.fee_bps / 1e4
 
     def adjacent(j: int) -> bool:  # bar j+1 exists in the window and directly follows bar j
-        return j + 1 < end and candles[j + 1].open_time_ms - candles[j].open_time_ms == dur
+        return j + 1 < end and candles[j + 1].open_time_ms == series.timeframe.next_open_ms(candles[j].open_time_ms)
 
     counts = {"match": 0, "no_match": 0, "insufficient_data": 0, "ignored_in_position": 0,
               "skipped_gap_before_entry": 0, "skipped_no_atr": 0, "no_next_bar": 0}
@@ -285,8 +285,8 @@ def metrics(trades: Sequence[dict[str, Any]], curve: Sequence[float], bars_in_po
 
 
 def _gap_report(series: CandleSeries) -> list[dict[str, Any]]:
-    dur = series.timeframe.duration_ms
-    return [{"from_utc": utc_iso(a), "to_utc": utc_iso(b), "missing_bars": (b - a) // dur} for a, b in series.gaps]
+    tf = series.timeframe
+    return [{"from_utc": utc_iso(a), "to_utc": utc_iso(b), "missing_bars": tf.bars_between(a, b)} for a, b in series.gaps]
 
 
 def _header(source: Source, series: CandleSeries, config: BacktestConfig) -> dict[str, Any]:

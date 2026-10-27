@@ -26,6 +26,8 @@ function render(u: UsageResponse): HTMLElement[] {
         h("dd", null, `${fmtUsd(u.total_cost_usd)} / ${u.monthly_ai_budget_usd ? fmtUsd(u.monthly_ai_budget_usd) : "no USD cap"} (${pct(u.total_cost_usd, u.monthly_ai_budget_usd)})`),
         h("dt", null, "Calls with unknown cost"),
         h("dd", null, fmtInt(u.calls_with_unknown_cost)),
+        h("dt", null, "Answered from cache (free)"),
+        h("dd", null, u.cache_hit_rate == null ? "no AI calls yet" : `${fmtInt(u.cache_hits ?? 0)} (${Math.round(u.cache_hit_rate * 100)}%)`),
       ),
       h("p", { class: "small muted" }, u.note),
     ),

@@ -1,7 +1,9 @@
 import pytest
 
 from my_ai_trading.fixtures import downtrend_closes, series_from_closes, uptrend_closes
-from my_ai_trading.strategies import darvas_box, minervini_trend_template, turtle_breakout, weinstein_stage
+from my_ai_trading.strategies import (darvas_box, minervini_trend_template, turtle_breakout, weinstein_stage,
+                                      williams_volatility_breakout, raschke_holy_grail,
+                                      brandt_classical_patterns)
 
 
 def test_minervini_price_criteria_partial_and_failed_and_insufficient():
@@ -43,3 +45,46 @@ def test_darvas_box_breakout_and_inside():
     assert out["state"] == "BREAKOUT_ABOVE_BOX" and out["box"]["top"] == 1.28
     assert "volume confirmation" in out["unevaluated_criteria"]
     assert darvas_box(series_from_closes(rise + box + [1.10], spread=0.0))["state"] == "BREAK_BELOW_BOX"
+
+
+def test_williams_volatility_breakout_levels():
+    from dataclasses import replace
+    s = series_from_closes([1.0, 1.0, 1.0], spread=0.05)
+    last = s.candles[-1]
+    prev = s.candles[-2]
+    rng = prev.high - prev.low
+    up = replace(last, high=last.open + 0.7 * rng, close=last.open + 0.5 * rng)
+    r = williams_volatility_breakout(type(s)(s.instrument, s.timeframe, s.candles[:-1] + (up,)))
+    assert r["state"] == "UPSIDE_LEVEL_EXCEEDED" and r["values"]["upside_level"] == pytest.approx(last.open + 0.6 * rng)
+    assert williams_volatility_breakout(s)["state"] == "NO_LEVEL_EXCEEDED"
+    with pytest.raises(ValueError):
+        williams_volatility_breakout(series_from_closes([1.0] * 5, "1h"))
+
+
+def test_raschke_holy_grail_needs_strong_rising_trend_and_ema_touch():
+    from dataclasses import replace
+    from my_ai_trading.indicators import ema
+    s = series_from_closes(uptrend_closes(120, growth=0.02))
+    r = raschke_holy_grail(s)
+    assert r["checks"]["adx_above_30"] and r["state"] in ("SETUP_PRESENT_LONG_SIDE", "NO_SETUP")
+    e = ema([c.close for c in s.candles[:-1]] + [s.candles[-1].close], 20)
+    last = s.candles[-1]
+    touched = replace(last, low=min(last.low, e * 0.999), open=max(last.open, e * 0.999))
+    s2 = type(s)(s.instrument, s.timeframe, s.candles[:-1] + (touched,))
+    r2 = raschke_holy_grail(s2)
+    assert r2["checks"]["bar_touches_ema20"]
+    assert r2["state"] == ("SETUP_PRESENT_LONG_SIDE" if r2["checks"]["adx_rising"] else "NO_SETUP")
+    assert raschke_holy_grail(series_from_closes(uptrend_closes(20)))["state"] == "INSUFFICIENT_DATA"
+    with pytest.raises(ValueError):
+        raschke_holy_grail(series_from_closes(uptrend_closes(100), "1h"))
+
+
+def test_brandt_classical_patterns_report_shape():
+    r = brandt_classical_patterns(series_from_closes(uptrend_closes(300)))
+    assert r["state"] in ("PATTERNS_PRESENT", "NO_RECENT_PATTERN") and "discretionary" in r["note"]
+    for p in r["patterns"]:
+        assert p["invalidation"] and p["pattern"] in {"HEAD_AND_SHOULDERS", "INVERSE_HEAD_AND_SHOULDERS",
+                                                      "ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE",
+                                                      "SYMMETRICAL_TRIANGLE", "RISING_WEDGE", "FALLING_WEDGE",
+                                                      "BULL_FLAG", "BEAR_FLAG"}
+    assert brandt_classical_patterns(series_from_closes(uptrend_closes(10)))["state"] == "INSUFFICIENT_DATA"

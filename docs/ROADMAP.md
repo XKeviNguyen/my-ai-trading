@@ -60,9 +60,9 @@ Full text in PRD §9. Each becomes an offline, fixture-based test before the mil
 
 | Scenario | Requirement under test | First gate |
 |---|---|---|
-| **G** — Weinstein selected on a 1H chart | Stage Analysis evaluated on 1W; hourly SMA30 never labelled native; hybrid / opt-in adaptation offered | R3 |
+| **G** — Weinstein selected on a 1H chart | Stage Analysis evaluated on 1W; hourly SMA30 never labeled native; hybrid / opt-in adaptation offered | R3 |
 | **H** — Lynch on SANDUSDT perpetual 1H | `UNSUPPORTED_ASSET` / `INSUFFICIENT_DATA` for fundamentals; never a Lynch hourly BUY | R3 |
-| **I** — user knowingly insists on 1H | Labelled `HYBRID` / `ADAPTED` / `CUSTOM` result, not a refusal; original version unchanged; activation needs preview + approval | R3 |
+| **I** — user knowingly insists on 1H | Labeled `HYBRID` / `ADAPTED` / `CUSTOM` result, not a refusal; original version unchanged; activation needs preview + approval | R3 |
 | **J** — bullish daily breakout in bearish weekly regime | Challenge My Thesis returns both sides, missing data, falsification conditions; no invented probabilities | R4 |
 | **K** — three profiles with different horizons/data | Per-framework applicability and evidence; no `2 BUY vs 1 SELL` vote or unsupported consensus | R3 (deterministic), R4 (copilot) |
 | **L** — session stocks, 24/7 crypto, open/closed bars | Correct calendar per source; 30 weekly ≠ 30 hourly bars; no new weekly signal per hourly event | R2 (cadence), R3 (labels) |

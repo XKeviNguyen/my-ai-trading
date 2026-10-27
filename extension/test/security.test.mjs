@@ -59,3 +59,9 @@ test("dist contains the files the manifest references", () => {
     assert.ok(existsSync(join(dist, p)), `missing ${p}`);
   }
 });
+
+test("ARIA attribute names keep their spec spelling", () => {
+  for (const { f, text } of code) assert.ok(!/aria-labeledby/i.test(text), `${f}: use aria-labelledby`);
+  const html = readFileSync(join(dist, "sidepanel.html"), "utf8");
+  assert.ok(!/aria-labeledby/i.test(html) && /aria-labelledby/.test(html));
+});
