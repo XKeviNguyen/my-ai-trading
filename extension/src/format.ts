@@ -103,3 +103,16 @@ export function mergeAlerts(existing: Alert[], incoming: Alert[], max = 200): Al
 export function maxSeq(alerts: Alert[], fallback = 0): number {
   return alerts.reduce((m, a) => (typeof a.seq === "number" && a.seq > m ? a.seq : m), fallback);
 }
+
+const STATUS_LABELS: ReadonlyMap<string, string> = new Map([
+  ["OK", "OK"],
+  ["INSUFFICIENT_DATA", "Too few bars"],
+  ["STALE_DATA", "Stale"],
+  ["PROVIDER_ERROR", "Error"],
+]);
+
+/** Readable timeframe status. A Map, not an object literal: API strings such as "constructor" must stay text. */
+export function statusLabel(status: unknown): string {
+  if (typeof status !== "string" || status === "") return "—";
+  return STATUS_LABELS.get(status) ?? status;
+}

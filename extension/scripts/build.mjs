@@ -27,7 +27,7 @@ for (const file of walk(src)) {
   cpSync(file, out);
   jsCount += 1;
 }
-for (const name of readdirSync(join(root, "static"))) cpSync(join(root, "static", name), join(dist, name));
+for (const name of readdirSync(join(root, "static"))) cpSync(join(root, "static", name), join(dist, name), { recursive: true });
 // Re-serialise the manifest to guarantee it is valid JSON.
 writeFileSync(join(dist, "manifest.json"), JSON.stringify(JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")), null, 2));
 

@@ -3,7 +3,7 @@
 
 import type { App, View } from "../app.js";
 import { badge, h, list, setChildren, status } from "../dom.js";
-import { fmtAge, fmtJson, fmtNum } from "../format.js";
+import { fmtAge, fmtJson, fmtMs, fmtNum, statusLabel } from "../format.js";
 import { marketLabel } from "../symbol.js";
 import type { Alignment, AnalysisResponse, MarketEvent, Perspective, Snapshot, TimeframeReport, PatternDetection } from "../types.js";
 
@@ -48,7 +48,7 @@ export function patternsList(patterns: PatternDetection[] | undefined): HTMLElem
     h("p", { class: "small muted" }, "These detectors also fire on random data; treat them as prompts to look."),
     h("ul", { class: "plain" }, patterns.map((p) =>
       h("li", null, badge(p.state, p.state === "FAILED" ? "muted" : "info"), " ", p.pattern.replaceAll("_", " ").toLowerCase(),
-        p.invalidation ? h("div", { class: "small" }, `Invalidation: ${p.invalidation}`) : null))),
+        p.invalidation ? invalidation(p.invalidation) : null))),
   );
 }
 
@@ -56,53 +56,99 @@ export function eventsList(events: MarketEvent[] | undefined): HTMLElement {
   if (!events || events.length === 0) return h("p", { class: "muted" }, "No events on the last closed bar.");
   return h(
     "ul",
-    { class: "plain events" },
+    { class: "plain events event-list" },
     events.map((e) =>
       h(
         "li",
         null,
-        h("strong", null, e.type),
-        e.bar_close_time_utc ? ` · bar closed ${e.bar_close_time_utc}` : "",
-        e.invalidation ? h("div", { class: "small" }, `Invalidation: ${e.invalidation}`) : null,
+        h(
+          "div",
+          { class: "event-head" },
+          h("span", { class: "event-type" }, e.type),
+          e.bar_close_time_utc ? h("span", { class: "small muted" }, `bar closed ${e.bar_close_time_utc}`) : null,
+        ),
+        e.invalidation ? invalidation(e.invalidation) : null,
       ),
     ),
   );
 }
 
-function timeframeCard(tf: string, r: TimeframeReport, now: number): HTMLElement {
-  const iv = r.indicator_values ?? {};
-  const head = h(
-    "header",
-    { class: "card-head" },
-    h("h4", null, tf),
-    badge(r.status, tfTone(r.status)),
-    r.trend?.state ? badge(`trend ${r.trend.state}`, "muted") : null,
+/** Invalidation is risk information: always in the risk lane, never styled like a signal. */
+export function invalidation(text: string): HTMLElement {
+  return h("p", { class: "invalidation" }, h("b", null, "Invalidation: "), text);
+}
+
+type Row = [label: string, cell: (r: TimeframeReport, now: number) => string | HTMLElement, group?: boolean];
+
+function trendCell(state: string | undefined): HTMLElement | string {
+  if (state === "UP") return h("span", { class: "trend-up" }, "Up");
+  if (state === "DOWN") return h("span", { class: "trend-down" }, "Down");
+  if (state === "MIXED") return "Mixed";
+  return "—";
+}
+
+const iv = (r: TimeframeReport, k: string, digits = 6): string => fmtNum(r.indicator_values?.[k], digits);
+
+const MATRIX_ROWS: Row[] = [
+  ["Status", (r) => badge(statusLabel(r.status), tfTone(r.status))],
+  ["Trend", (r) => trendCell(r.trend?.state)],
+  ["Close", (r) => fmtNum(r.last_close), true],
+  ["SMA50", (r) => iv(r, "sma50")],
+  ["SMA200", (r) => iv(r, "sma200")],
+  ["RSI14", (r) => iv(r, "rsi14_wilder", 4), true],
+  ["MACD hist", (r) => iv(r, "macd_histogram")],
+  ["Boll. %B", (r) => iv(r, "bollinger_20_2_percent_b", 4)],
+  ["ADX14", (r) => iv(r, "adx14", 4)],
+  ["+DI / −DI", (r) => `${iv(r, "plus_di14", 4)} / ${iv(r, "minus_di14", 4)}`],
+  ["Vol ratio", (r) => iv(r, "volume_ratio_20", 4)],
+  ["Bar close UTC", (r) => (r.bar_close_time_utc ? fmtMs(Date.parse(r.bar_close_time_utc)).slice(5, 16) : "—"), true],
+  ["Bar age", (r, now) => (r.bar_close_time_utc ? fmtAge(r.bar_close_time_utc, now) || "—" : "—")],
+];
+
+/** All timeframes side by side so values can be compared across a row. */
+export function timeframeMatrix(tfs: [string, TimeframeReport][], now: number): HTMLElement {
+  if (tfs.length === 0) return h("p", { class: "muted" }, "No timeframes in this snapshot.");
+  return h(
+    "div",
+    { class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Indicator values by timeframe" },
+    h(
+      "table",
+      { class: "matrix" },
+      h("caption", { class: "sr-only" }, "Indicator values by timeframe, from the last closed bar of each timeframe"),
+      h("thead", null, h("tr", null, h("th", { scope: "col" }, "Metric"), tfs.map(([tf]) => h("th", { scope: "col" }, tf)))),
+      h(
+        "tbody",
+        null,
+        MATRIX_ROWS.map(([label, cell, group]) =>
+          h(
+            "tr",
+            { class: group ? "group" : null },
+            h("th", { scope: "row" }, label),
+            tfs.map(([, r]) => h("td", null, r.status === "PROVIDER_ERROR" && label !== "Status" ? "—" : cell(r, now))),
+          ),
+        ),
+      ),
+    ),
   );
+}
+
+/** Events, patterns, provider errors and data notes, only for timeframes that have any. */
+function timeframeNotes(tf: string, r: TimeframeReport): HTMLElement | null {
+  const events = r.events ?? [];
+  const notes = r.missing_inputs ?? [];
   if (r.status === "PROVIDER_ERROR") {
-    return h("article", { class: "card" }, head, status("error", r.error || "Provider error for this timeframe."));
+    return h("article", { class: "card lane lane-fault" }, h("h4", null, tf), status("error", r.error || "Provider error for this timeframe."));
   }
+  const reason = r.trend?.reason;
+  if (!events.length && !r.patterns?.length && !notes.length && !reason) return null;
   return h(
     "article",
-    { class: "card" },
-    head,
-    kv([
-      ["Bar close", `${r.bar_close_time_utc ?? "—"} ${r.bar_close_time_utc ? `(${fmtAge(r.bar_close_time_utc, now)})` : ""}`],
-      ["Close", fmtNum(r.last_close)],
-      ["SMA50", fmtNum(iv["sma50"])],
-      ["SMA200", fmtNum(iv["sma200"])],
-      ["RSI14 (Wilder)", fmtNum(iv["rsi14_wilder"], 4)],
-      ["Volume ratio (20)", fmtNum(iv["volume_ratio_20"], 4)],
-      ["MACD histogram (12/26/9)", fmtNum(iv["macd_histogram"])],
-      ["Bollinger %B (20, 2)", fmtNum(iv["bollinger_20_2_percent_b"], 4)],
-      ["ADX14 (+DI / −DI)", `${fmtNum(iv["adx14"], 4)} (${fmtNum(iv["plus_di14"], 4)} / ${fmtNum(iv["minus_di14"], 4)})`],
-    ]),
-    r.trend?.reason ? h("p", { class: "small muted" }, r.trend.reason) : null,
-    h("h5", null, "Events"),
-    eventsList(r.events),
+    { class: `card lane${events.length ? " lane-event" : ""}` },
+    h("header", { class: "card-head" }, h("h4", null, tf), events.length ? badge(`${events.length} event${events.length > 1 ? "s" : ""}`, "muted") : null),
+    events.length ? eventsList(events) : null,
+    reason ? h("p", { class: "small muted" }, `Trend: ${reason}`) : null,
     patternsList(r.patterns),
-    r.missing_inputs && r.missing_inputs.length
-      ? h("details", null, h("summary", null, `Data notes (${r.missing_inputs.length})`), list(r.missing_inputs))
-      : null,
+    notes.length ? h("details", null, h("summary", null, `Data notes (${notes.length})`), list(notes)) : null,
   );
 }
 
@@ -118,28 +164,40 @@ export function alignmentBlock(a: Alignment | undefined): HTMLElement {
   );
 }
 
-function snapshotHeader(snap: Snapshot, atf: string, now: number): HTMLElement {
+function headlineBar(main: TimeframeReport | undefined, atf: string, now: number): string {
+  if (!main) return `${atf} is not in this snapshot.`;
+  if (main.status === "PROVIDER_ERROR") return `${atf} data could not be loaded.`;
+  if (!main.bar_close_time_utc) return `No closed ${atf} bar yet.`;
+  const age = fmtAge(main.bar_close_time_utc, now);
+  return `Last ${atf} bar closed ${fmtMs(Date.parse(main.bar_close_time_utc))}${age ? ` (${age})` : ""}.`;
+}
+
+function headline(snap: Snapshot, atf: string, now: number): HTMLElement {
   const inst = snap.instrument ?? {};
   const reports = Object.values(snap.timeframes ?? {});
   const stale = reports.filter((r) => r.status === "STALE_DATA").length;
   const errors = reports.filter((r) => r.status === "PROVIDER_ERROR").length;
+  const main = snap.timeframes?.[atf];
   return h(
     "section",
-    { class: "card", "aria-label": "Data freshness" },
+    { class: "headline", "aria-label": "Instrument and data freshness" },
     h(
-      "header",
-      { class: "card-head" },
-      h("h3", null, inst.symbol ?? "—"),
+      "div",
+      { class: "headline-top" },
+      h("h2", { class: "headline-symbol" }, inst.symbol ?? "—"),
       badge(inst.market_type === "spot" ? marketLabel("spot") : marketLabel("usdm_perpetual"), "info"),
-      stale ? badge(`STALE ×${stale}`, "err") : null,
-      errors ? badge(`PROVIDER_ERROR ×${errors}`, "err") : null,
+      Number.isFinite(main?.last_close)
+        ? h("p", { class: "headline-close" }, h("span", { class: "headline-close-label" }, `Last ${atf} close`), fmtNum(main?.last_close))
+        : null,
     ),
-    kv([
-      ["Venue", inst.venue ?? "—"],
-      ["As of", `${snap.as_of_utc ?? "—"} (${fmtAge(snap.as_of_ms, now)})`],
-      ["Analysis timeframe", atf],
-      ["Source", snap.source ?? "—"],
-    ]),
+    h(
+      "p",
+      { class: "headline-meta" },
+      stale ? badge(`Stale: ${stale}`, "err") : null,
+      errors ? badge(`Provider error: ${errors}`, "err") : null,
+      headlineBar(main, atf, now),
+    ),
+    h("p", { class: "headline-meta" }, `Data from ${inst.venue ?? "—"} (${snap.source ?? "unknown source"}), as of ${fmtMs(snap.as_of_ms)}.`),
   );
 }
 
@@ -199,16 +257,23 @@ export class AnalysisView implements View {
     const now = Date.now();
     const snap = data.snapshot ?? {};
     const atf = data.perspectives?.analysis_timeframe ?? this.app.analysisTf;
-    const tfCards = Object.entries(snap.timeframes ?? {}).map(([tf, r]) => timeframeCard(tf, r, now));
+    const tfs = Object.entries(snap.timeframes ?? {});
+    const notes = tfs.map(([tf, r]) => timeframeNotes(tf, r)).filter((n): n is HTMLElement => n !== null);
     const persp = data.perspectives?.perspectives ?? [];
     return [
-      snapshotHeader(snap, atf, now),
+      headline(snap, atf, now),
       h(
         "section",
         { "aria-labelledby": "mtf-h" },
-        h("h3", { id: "mtf-h" }, "Multi-timeframe summary"),
+        h("h3", { id: "mtf-h" }, "Timeframes"),
+        timeframeMatrix(tfs, now),
         alignmentBlock(snap.alignment),
-        h("div", { class: "cards" }, tfCards),
+      ),
+      h(
+        "section",
+        { "aria-labelledby": "events-h" },
+        h("h3", { id: "events-h" }, "Events, patterns and data notes"),
+        notes.length ? h("div", { class: "cards" }, notes) : h("p", { class: "muted" }, "No events, patterns or data notes on the last closed bars."),
       ),
       h(
         "section",
@@ -272,7 +337,7 @@ export class AnalysisView implements View {
           )
         : null,
       h("h5", null, "Reasons"),
-      list(a.reasons),
+      h("div", { class: "small" }, list(a.reasons)),
       a.requires_user_approval
         ? h("p", { class: "small warn-text" }, "This adaptation requires a preview and your approval before it runs.")
         : null,

@@ -6,11 +6,11 @@ import sys
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QHBoxLayout, QLineEdit, QMainWindow, QPushButton, QStyle, QSystemTrayIcon, QTabWidget,
-    QVBoxLayout, QWidget,
+    QApplication, QComboBox, QFrame, QHBoxLayout, QLineEdit, QMainWindow, QPushButton, QStyle, QSystemTrayIcon,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
-from . import __version__
+from . import __version__, theme
 from . import formatting as F
 from .client import DEFAULT_PORT, MARKETS, TIMEFRAMES
 from .context import AppContext
@@ -47,6 +47,11 @@ class MainWindow(QMainWindow):
         central = QWidget()
         outer = QVBoxLayout(central)
         outer.addWidget(self._instrument_bar())
+        rule = QFrame()  # the theme paints it as the rainbow neon line (theme.py); plain line without the theme
+        rule.setObjectName("rainbow-rule")
+        rule.setFrameShape(QFrame.Shape.HLine)
+        rule.setFixedHeight(2)
+        outer.addWidget(rule)
         self.bar_msg = status_label("info", "")
         self.bar_msg.setVisible(False)
         outer.addWidget(self.bar_msg)
@@ -178,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("My AI Trading Desktop")
     app.setOrganizationName("my-ai-trading")
+    theme.apply(app)
     win = MainWindow()
     win.show()
     return app.exec()

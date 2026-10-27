@@ -5,8 +5,8 @@ import { TIMEFRAMES } from "../api.js";
 
 import type { App, View } from "../app.js";
 import { badge, field, h, list, setChildren, status } from "../dom.js";
-import { fmtInt, fmtNum, fmtUsd } from "../format.js";
-import type { AskResponse, ChallengeResponse, Interpretation, LocalVisionAnalysis, VisionResponse } from "../types.js";
+import { fmtInt, fmtNum, fmtUsd, statusLabel } from "../format.js";
+import type { AskResponse, ChallengeResponse, FactRow, Interpretation, LocalVisionAnalysis, VisionResponse } from "../types.js";
 import { alignmentBlock } from "./analysis.js";
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -51,30 +51,48 @@ function fallback(route: string | undefined, reason: string | undefined): HTMLEl
   );
 }
 
+const FACT_STATUSES = ["OK", "INSUFFICIENT_DATA", "STALE_DATA"];
+
+/** Deterministic facts as one table, timeframes as columns (same reading pattern as the Analysis tab). */
+function factsTable(rows: FactRow[]): HTMLElement {
+  const ok = (t: FactRow) => !t.error && (!t.status || FACT_STATUSES.includes(t.status));
+  const lines: [string, (t: FactRow) => string | HTMLElement][] = [
+    ["Status", (t) => badge(statusLabel(t.status), ok(t) ? (t.status === "OK" ? "ok" : "warn") : "err")],
+    ["Trend", (t) => t.trend ?? "—"],
+    ["Close", (t) => fmtNum(t.close)],
+    ["SMA50", (t) => fmtNum(t.sma50)],
+    ["SMA200", (t) => fmtNum(t.sma200)],
+    ["RSI14", (t) => fmtNum(t.rsi14, 4)],
+    ["Vol ratio", (t) => fmtNum(t.volume_ratio_20, 3)],
+    ["Events", (t) => String(Array.isArray(t.events) ? t.events.length : 0)],
+  ];
+  return h(
+    "div",
+    { class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Deterministic facts by timeframe" },
+    h(
+      "table",
+      { class: "matrix" },
+      h("caption", { class: "sr-only" }, "Deterministic facts by timeframe"),
+      h("thead", null, h("tr", null, h("th", { scope: "col" }, "Fact"), rows.map((t) => h("th", { scope: "col" }, t.timeframe)))),
+      h(
+        "tbody",
+        null,
+        lines.map(([label, cell]) =>
+          h("tr", null, h("th", { scope: "row" }, label), rows.map((t) => h("td", null, ok(t) || label === "Status" ? cell(t) : "—"))),
+        ),
+      ),
+    ),
+  );
+}
+
 function renderAsk(r: AskResponse): HTMLElement[] {
   const f = r.facts ?? {};
-  const rows = (f.timeframes ?? []).map((t) => {
-    if (t.error || (t.status && !["OK", "INSUFFICIENT_DATA", "STALE_DATA"].includes(t.status))) {
-      return h("li", null, h("strong", null, t.timeframe), ` · ${t.status ?? ""} ${t.error ?? ""}`);
-    }
-    const parts = [
-      t.status,
-      `bar closed ${t.bar_close_time_utc ?? "—"}`,
-      `close ${fmtNum(t.close)}`,
-      `trend ${t.trend ?? "—"}`,
-      `SMA50 ${fmtNum(t.sma50)}`,
-      `SMA200 ${fmtNum(t.sma200)}`,
-      `RSI14 ${fmtNum(t.rsi14, 4)}`,
-      `vol ratio ${fmtNum(t.volume_ratio_20, 4)}`,
-    ];
-    return h(
-      "li",
-      null,
-      h("strong", null, t.timeframe),
-      ` · ${parts.join(" · ")}`,
-      t.events && t.events.length ? h("div", { class: "small" }, `Events: ${t.events.join(", ")}`) : null,
-    );
-  });
+  const tfRows = f.timeframes ?? [];
+  const details = tfRows.flatMap((t) => [
+    t.error ? `${t.timeframe}: ${t.status ?? "error"} ${t.error}` : null,
+    Array.isArray(t.events) && t.events.length ? `${t.timeframe} events: ${t.events.join(", ")}` : null,
+    t.bar_close_time_utc ? `${t.timeframe} bar closed ${t.bar_close_time_utc}` : null,
+  ]).filter((x): x is string => x !== null);
   const persp = (f.perspectives ?? []).map(
     (p) => `${p.methodology ?? ""}: ${p.status ?? ""} — ${p.label ?? ""} — eval ${p.evaluation_timeframe ?? "none"} — ${p.state ?? "—"}`,
   );
@@ -85,7 +103,8 @@ function renderAsk(r: AskResponse): HTMLElement[] {
       h("h4", null, "Facts (deterministic)"),
       h("p", { class: "mode-label" }, f.label ?? "Observed facts"),
       r.snapshot_as_of_utc ? h("p", { class: "small muted" }, `Snapshot as of ${r.snapshot_as_of_utc}`) : null,
-      rows.length ? h("ul", { class: "plain" }, rows) : h("p", { class: "muted" }, "No timeframe facts."),
+      tfRows.length ? factsTable(tfRows) : h("p", { class: "muted" }, "No timeframe facts."),
+      details.length ? h("details", null, h("summary", null, `Bar times and events (${details.length})`), list(details)) : null,
       alignmentBlock(f.alignment),
       persp.length ? [h("h5", null, "Perspectives (each on its own)"), list(persp)] : null,
     ),

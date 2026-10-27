@@ -27,9 +27,7 @@ def plain_label(text: str, *, wrap: bool = True, selectable: bool = True, name: 
     if name:
         lab.setObjectName(name)
     if muted:
-        f = lab.font()
-        f.setItalic(True)
-        lab.setFont(f)
+        lab.setProperty("muted", True)  # colored by theme.py; italic would hurt long-session reading
     if bold:
         f = lab.font()
         f.setBold(True)
@@ -90,7 +88,7 @@ def kv_form(rows: Iterable[tuple[str, str]]) -> QWidget:
     form.setContentsMargins(0, 0, 0, 0)
     for k, v in rows:
         key = plain_label(k, selectable=False, bold=True)
-        val = plain_label(v)
+        val = plain_label(v, name="kv-value")  # numbers use the equal-width data font (theme.py)
         key.setBuddy(val)
         form.addRow(key, val)
     return w
