@@ -14,13 +14,14 @@ import type {
   MethodologiesResponse,
   StrategiesResponse,
   StrategyRule,
+  ReportsResponse,
   UsageResponse,
   UserSettings,
   VisionResponse,
 } from "./types.js";
 
 export const API_BASE = "http://127.0.0.1:8765";
-export const TIMEFRAMES = ["1h", "4h", "1d", "1w"] as const;
+export const TIMEFRAMES = ["1h", "4h", "1d", "1w", "1M"] as const;
 const PATH_RE = /^\/api\/v1(?:\/[A-Za-z0-9_-]+)*$/;
 const RULE_HASH_RE = /^[0-9a-f]{16}$/;
 const STRATEGY_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -96,6 +97,8 @@ interface RequestOptions {
   form?: FormData;
   auth?: boolean;
   timeoutMs?: number;
+  /** Return the raw response body as text instead of parsing JSON. */
+  text?: boolean;
 }
 
 function scrub(text: string, token: string | null | undefined): string {
@@ -221,12 +224,14 @@ export class ApiClient {
     }
 
     let parsed: unknown = null;
+    let raw = "";
     try {
-      const text = await res.text();
-      parsed = text ? JSON.parse(text) : null;
+      raw = await res.text();
+      parsed = raw && !(opts.text && res.ok) ? JSON.parse(raw) : null;
     } catch {
       parsed = null;
     }
+    if (opts.text && res.ok) return raw as unknown as T; // e.g. a Markdown export
     if (!res.ok) {
       const kind = kindForStatus(res.status);
       const retry =
@@ -320,5 +325,18 @@ export class ApiClient {
   }
   async usage(): Promise<UsageResponse> {
     return this.request("GET", "/api/v1/usage");
+  }
+  async saveReport(symbol: string, market: Market, analysisTimeframe?: string): Promise<{ id: string; title: string }> {
+    requireSymbol(symbol, market);
+    return this.request("POST", "/api/v1/reports", {
+      json: { symbol, market, ...(analysisTimeframe ? { analysis_timeframe: analysisTimeframe } : {}) },
+    });
+  }
+  async reports(): Promise<ReportsResponse> {
+    return this.request("GET", "/api/v1/reports");
+  }
+  async reportMarkdown(id: string): Promise<string> {
+    if (!/^[0-9a-f]{12}$/.test(id)) throw new ApiError("validation", 0, "invalid report id");
+    return this.request("GET", `/api/v1/reports/${id}`, { query: { format: "markdown" }, text: true });
   }
 }

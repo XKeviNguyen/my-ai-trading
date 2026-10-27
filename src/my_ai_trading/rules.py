@@ -15,12 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .domain import CandleSeries, Timeframe
 from .engine import trend_state, utc_iso
-from .indicators import atr_wilder, ema, prior_high, prior_low, rsi_wilder, sma, volume_ratio
+from .indicators import (adx, atr_wilder, bollinger, ema, macd, prior_high, prior_low, rsi_wilder, sma,
+                         volume_ratio)
 
 RULE_SCHEMA_VERSION = 1
 MAX_NODES, MAX_DEPTH = 32, 6
-TimeframeCode = Literal["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
-PERIOD_METRICS = {"sma", "ema", "volume_ratio", "prior_high", "prior_low", "atr_wilder", "rsi_wilder"}
+TimeframeCode = Literal["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
+PERIOD_METRICS = {"sma", "ema", "volume_ratio", "prior_high", "prior_low", "atr_wilder", "rsi_wilder", "adx",
+                  "bollinger_percent_b"}  # macd_histogram uses the standard 12/26/9 periods
 
 
 class _Strict(BaseModel):
@@ -29,7 +31,7 @@ class _Strict(BaseModel):
 
 class MetricRef(_Strict):
     name: Literal["close", "open", "high", "low", "volume", "sma", "ema", "volume_ratio", "prior_high",
-                  "prior_low", "atr_wilder", "rsi_wilder"]
+                  "prior_low", "atr_wilder", "rsi_wilder", "adx", "bollinger_percent_b", "macd_histogram"]
     timeframe: TimeframeCode
     period: int | None = Field(default=None, ge=1, le=500)
     bar: Literal["last_closed", "previous_closed"] = "last_closed"
@@ -236,6 +238,15 @@ def metric_value(m: MetricRef, tail: tuple) -> float | None:
             return atr_wilder(bars, n)
         case "rsi_wilder":
             return rsi_wilder(closes, n)
+        case "adx":
+            d = adx(bars, n)
+            return d and d["adx"]
+        case "bollinger_percent_b":
+            b = bollinger(closes, n)
+            return b and b["percent_b"]
+        case "macd_histogram":
+            mh = macd(closes)
+            return mh and mh["histogram"]
     return None
 
 

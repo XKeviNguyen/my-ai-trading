@@ -1,5 +1,7 @@
 // Strategy Studio: compile prompts → preview → dry-run / save draft → explicit rule_hash approval.
 
+import { TIMEFRAMES } from "../api.js";
+
 import type { App, View } from "../app.js";
 import { badge, field, h, list, setChildren, status } from "../dom.js";
 import { fmtJson, fmtMs } from "../format.js";
@@ -93,7 +95,7 @@ export class StudioView implements View {
       this.composer(),
       h(
         "section",
-        { "aria-labeledby": "strat-h" },
+        { "aria-labelledby": "strat-h" },
         h("div", { class: "row-between" }, h("h3", { id: "strat-h" }, "My strategies"), h("button", { type: "button", onclick: () => void this.loadList() }, "Reload")),
         this.listBox,
       ),
@@ -114,7 +116,7 @@ export class StudioView implements View {
       "select",
       null,
       h("option", { value: "" }, "None (prompts must state it)"),
-      ["1h", "4h", "1d", "1w"].map((t) => h("option", { value: t }, t)),
+      TIMEFRAMES.map((t) => h("option", { value: t }, t)),
     );
     const llm = h("input", { type: "checkbox" });
     const out = h("div", { "aria-live": "polite" });
@@ -143,7 +145,7 @@ export class StudioView implements View {
         .catch((err) => setChildren(out, this.app.errorView(err)))
         .finally(() => (btn.disabled = false));
     });
-    return h("section", { "aria-labeledby": "studio-h" }, h("h3", { id: "studio-h" }, "Strategy Studio"), form);
+    return h("section", { "aria-labelledby": "studio-h" }, h("h3", { id: "studio-h" }, "Strategy Studio"), form);
   }
 
   private proposal(r: CompileResponse | (Partial<CompileResponse> & { reason?: string; model?: string }), prompts: string[], title: string): HTMLElement {

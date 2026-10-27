@@ -1,6 +1,8 @@
 // Copilot chat, Challenge My Thesis and optional chart-screenshot vision.
 // Deterministic facts are always shown separately from model interpretation (untrusted text).
 
+import { TIMEFRAMES } from "../api.js";
+
 import type { App, View } from "../app.js";
 import { badge, field, h, list, setChildren, status } from "../dom.js";
 import { fmtInt, fmtNum, fmtUsd } from "../format.js";
@@ -221,7 +223,7 @@ export class CopilotView implements View {
         .catch((err) => setChildren(out, this.app.errorView(err)))
         .finally(() => (btn.disabled = false));
     });
-    return h("section", { "aria-labeledby": "ask-h" }, h("h3", { id: "ask-h" }, "Copilot"), form);
+    return h("section", { "aria-labelledby": "ask-h" }, h("h3", { id: "ask-h" }, "Copilot"), form);
   }
 
   private challengeSection(): HTMLElement {
@@ -230,7 +232,7 @@ export class CopilotView implements View {
       "select",
       null,
       h("option", { value: "" }, "Auto (smallest)"),
-      ["1h", "4h", "1d", "1w"].map((tf) => h("option", { value: tf }, tf)),
+      TIMEFRAMES.map((tf) => h("option", { value: tf }, tf)),
     );
     const deep = this.deepToggle();
     const out = h("div", { "aria-live": "polite" });
@@ -258,7 +260,7 @@ export class CopilotView implements View {
         .catch((err) => setChildren(out, this.app.errorView(err)))
         .finally(() => (btn.disabled = false));
     });
-    return h("section", { "aria-labeledby": "ch-h" }, h("h3", { id: "ch-h" }, "Challenge My Thesis"), form);
+    return h("section", { "aria-labelledby": "ch-h" }, h("h3", { id: "ch-h" }, "Challenge My Thesis"), form);
   }
 
   private visionSection(): HTMLElement {

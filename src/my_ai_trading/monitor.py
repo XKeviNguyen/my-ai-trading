@@ -19,13 +19,16 @@ from .domain import AnalysisMode, CandleSeries, InstrumentIdentity, Timeframe
 from .engine import analyze
 from .market import CLOSE_SAFETY_MS, MarketDataService
 from .methodology import BY_ID, assess
+from .patterns import recent_patterns
 from .providers.binance import MarketDataError, RateLimitedError
 from .rules import evaluate
 from .store import LOCAL_USER, Store
 from .strategies import EVALUATORS
 
 log = logging.getLogger(__name__)
-PRIORITY = {"BREAKOUT": 2, "BREAKDOWN": 2, "FAILED_BREAKOUT": 2, "FAILED_BREAKDOWN": 2, "STRATEGY_MATCH": 3,
+PATTERN_CAVEAT = ("Geometric pattern detectors also fire on random data (about 6 per 100 bars in tests); "
+                  "treat this as a prompt to look, not as evidence.")
+PRIORITY = {"PATTERN_CONFIRMED": 1, "BREAKOUT": 2, "BREAKDOWN": 2, "FAILED_BREAKOUT": 2, "FAILED_BREAKDOWN": 2, "STRATEGY_MATCH": 3,
             "METHODOLOGY_STATE": 2, "STALE_DATA": 1}
 MAX_BACKOFF_MS = 15 * 60_000
 UNRESOLVED_RETRY_MS = 10 * 60_000
@@ -132,9 +135,9 @@ class Monitor:
                 self._backoff(st, now, st.last_error or "evaluation incomplete")
             else:
                 st.failures, st.last_error = 0, None
-                dur = Timeframe(tf).duration_ms
                 last_close = series.candles[-1].close_time_ms if series.candles else now
-                st.next_due_ms = max(now + 1_000, last_close + dur + CLOSE_SAFETY_MS + 500)
+                next_close = Timeframe(tf).next_bar_close_ms(last_close) + 1
+                st.next_due_ms = max(now + 1_000, next_close + CLOSE_SAFETY_MS + 500)
             for alert in alerts:  # deliver per subscription, so a later failure cannot swallow them
                 if self.on_alert:
                     res = self.on_alert(alert)
@@ -166,6 +169,11 @@ class Monitor:
                 out += self._alert(inst, tf, "engine", ev["type"], last.open_time_ms, quiet,
                                    {"event": ev, "trend": report.get("trend"), "rule_version": ev["rule_version"]})
 
+        for d in recent_patterns(series, bars=1):  # only patterns resolved on THIS bar
+            if d["state"] in ("BREAKOUT_CONFIRMED", "BREAKDOWN_CONFIRMED") and d["end_bar_open_ms"] == last.open_time_ms:
+                out += self._alert(inst, tf, "pattern", "PATTERN_CONFIRMED", last.open_time_ms, quiet,
+                                   {"pattern": d, "rule_version": d["rule_version"], "caveat": PATTERN_CAVEAT})
+
         errors: list[str] = []
         cache: dict[str, CandleSeries] = {tf: series}
 
@@ -183,8 +191,9 @@ class Monitor:
                 errors.append(f"strategy {sid}: {exc}")
                 continue
             key = f"{self.user}|{inst.key}|{sid}"
-            if res["result"] == "MATCH" and self.store.cooldown_ok(key, last.open_time_ms, rule.cooldown_bars,
-                                                                     Timeframe(tf).duration_ms):
+            prev_bar = self.store.cooldown_last(key)
+            cool = prev_bar is None or Timeframe(tf).bars_between(prev_bar, last.open_time_ms) >= rule.cooldown_bars
+            if res["result"] == "MATCH" and cool:
                 created = self._alert(inst, tf, f"strategy:{sid}:v{version}", "STRATEGY_MATCH", last.open_time_ms,
                                       quiet, {"strategy_id": sid, "version": version, "name": rule.name,
                                               "evaluation": res, "label": "Custom strategy"})

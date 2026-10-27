@@ -51,7 +51,7 @@ cd extension && npm ci && npm run build
 2. Open the side panel, go to **Settings**, and paste the token from `~/.config/my-ai-trading/api_token`.
 3. Open a Binance futures or spot page. The panel picks up the symbol from the page address and shows the analysis next to your chart.
 
-See [docs/EXTENSION.md](docs/EXTENSION.md) for permissions and troubleshooting.
+See [docs/EXTENSION.md](docs/EXTENSION.md) for permissions and troubleshooting. Prefer a desktop window? See [docs/DESKTOP.md](docs/DESKTOP.md).
 
 ## Features
 
@@ -64,11 +64,11 @@ This is the product roadmap with an honest status for each item.
 | Feature | Status | What you get today |
 |---|---|---|
 | Auto market monitoring | ✅ | Watches your watchlist and runs once per newly closed candle on each timeframe. Duplicate-proof alerts, backoff on outages, stale-data detection. |
-| Multi-timeframe analysis | ✅ | Any fixed interval from 1m to 1W (monthly is planned), with a summary of where timeframes agree or conflict. |
-| Technical analysis engine | 🧪 | SMA, EMA, RSI, ATR (Wilder and simple), volume ratio, prior highs and lows. MACD and Bollinger Bands are planned. |
-| Chart pattern recognition | 🧪 | Darvas boxes and volatility contraction. VCP, cup and handle, head and shoulders, flags, triangles, and wedges are planned. |
-| Market structure | 🧪 | Trend state, support and resistance, breakouts, breakdowns, and failed breakouts. Supply and demand zones are planned. |
-| Smart alerts | ✅ | Breakouts, failed breakouts, moving-average reclaims and losses, unusual volume, your strategy matches, and method state changes. Quiet hours and pause. |
+| Multi-timeframe analysis | ✅ | Any interval from 1m to 1W, plus calendar months (1M), with a summary of where timeframes agree or conflict. |
+| Technical analysis engine | ✅ | SMA, EMA, RSI, MACD, Bollinger Bands, ADX/DI, ATR (Wilder and simple), volume ratio, prior highs and lows. Each formula and its warm-up period is documented and tested. |
+| Chart pattern recognition | 🧪 | VCP, cup and handle, head and shoulders (and inverse), flags, triangles, wedges, and Darvas boxes, all with explicit rules and invalidation levels. These detectors also fire on random data, so treat them as prompts to look. |
+| Market structure | 🧪 | Trend state, support and resistance, breakouts, breakdowns, failed breakouts, and supply and demand zones. |
+| Smart alerts | ✅ | Breakouts, failed breakouts, moving-average reclaims and losses, unusual volume, confirmed patterns, your strategy matches, and method state changes. Quiet hours and pause. |
 
 ### Copilot and Strategy Studio
 
@@ -76,7 +76,7 @@ This is the product roadmap with an honest status for each item.
 |---|---|---|
 | Interactive copilot | 🧪 | Ask about the current symbol. Facts always come from the engine. An optional AI model adds clearly labeled interpretation when you supply your own API key. |
 | Chart screenshots and deep reasoning | 🧪 | Local screenshot analysis with OpenCV and OCR: candle colors, labels, and price-axis text, all checked against exchange data. Optional AI vision and in-depth analysis. |
-| 20 trader-inspired profiles | 🧪 | All 20 are listed with their documented timeframes and data needs. Four have experimental rule checks: Minervini (price criteria), Weinstein, the Turtles, and Darvas. The rest are reference cards for now. |
+| 20 trader-inspired profiles | 🧪 | All 20 are listed with their documented timeframes and data needs. Seven have experimental rule checks: Minervini (price criteria), Weinstein, the Turtles, Darvas, Larry Williams, Linda Raschke, and Peter Brandt (classical patterns). The rest need data the app doesn't have yet (fundamentals, macro, news) or have no published rules. |
 | Custom Strategy Studio | ✅ | Describe a rule in plain English. Preview it, dry-run it on past candles, and turn it on only after approving that exact version. You can switch off every preset. |
 | Challenge My Thesis | ✅ | Lays out the evidence for and against your idea, your hidden assumptions, the unknowns, and the price levels that would prove you wrong. |
 | Method and timeframe fidelity | ✅ | Each method runs as Native, Hybrid, Adapted, or Custom, and is labeled that way. A 30-week moving average is never quietly swapped for a 30-hour one. |
@@ -85,7 +85,7 @@ This is the product roadmap with an honest status for each item.
 
 | Feature | Status | What you get today |
 |---|---|---|
-| ML signal research | 🧪 | Leak-free datasets, purged train/test splits, and baseline comparisons. Logistic regression runs if scikit-learn is installed. LightGBM is planned. |
+| ML signal research | 🧪 | Leak-free datasets, walk-forward folds with a purge gap, and logistic regression and LightGBM compared against simple baselines, with calibration and leakage checks. Install with `pip install -e '.[ml]'`. |
 | Backtesting lab | ✅ | Next-bar fills, fees, slippage, perpetual funding, ATR stops, and walk-forward folds. Results are always labeled hypothetical. |
 | AI cost control | 🧪 | Engine first, AI only when useful. Monthly token and dollar budgets, a usage dashboard, and consent before any data leaves your machine. Self-hosted or fine-tuned models are planned. |
 
@@ -94,8 +94,8 @@ This is the product roadmap with an honest status for each item.
 | Feature | Status | What you get today |
 |---|---|---|
 | Chrome extension | ✅ | Side panel with analysis, copilot, studio, alerts, usage, and settings. Recognizes Binance USD-M futures and spot pages. |
-| Desktop app | 🗓️ | Planned. The engine is already separate from the UI. |
-| Multi-market workspace | 🧪 | Watchlists and alert history for Binance crypto. Stocks and other markets are planned. There is no portfolio or position tracking, because the app is read-only by design. |
+| Desktop app | 🧪 | Native PySide6 app with the same features as the side panel, talking to the same local engine. Tested offscreen; not yet tried on a real display. See [docs/DESKTOP.md](docs/DESKTOP.md). |
+| Multi-market workspace | 🧪 | Watchlists, alert history, and saved analysis reports you can export as Markdown, for Binance crypto. Stocks and other markets are planned. There is no portfolio or position tracking, because the app is read-only by design. |
 
 ## How it works
 
@@ -134,7 +134,7 @@ Install the AI extra with `.venv/bin/pip install -e '.[ai]'`. The SDK reads its 
 ## Development
 
 ```bash
-.venv/bin/pip install -e '.[api,test,vision]'
+.venv/bin/pip install -e '.[api,test,vision,ml]'
 .venv/bin/python -m pytest              # Python tests (offline)
 cd extension && npm test                 # extension tests
 ```
@@ -145,7 +145,7 @@ Contributors should read [AGENTS.md](AGENTS.md) and [docs/SECURITY.md](docs/SECU
 
 - [Product requirements](docs/PRODUCT_REQUIREMENTS.md): the full vision and acceptance scenarios
 - [Roadmap](docs/ROADMAP.md) and [current progress](docs/PROGRESS.md)
-- [Chrome extension guide](docs/EXTENSION.md)
+- [Chrome extension guide](docs/EXTENSION.md) and [desktop app guide](docs/DESKTOP.md)
 - [Security policy](docs/SECURITY.md)
 
 ## License and disclaimer

@@ -175,7 +175,7 @@ def test_settings_validation_and_disable_all_presets():
     with pytest.raises(ValueError):
         UserSettings(selected_methodologies=[Selection(methodology_id="nobody")])
     with pytest.raises(ValueError):
-        UserSettings(analysis_timeframe="1M")
+        UserSettings(analysis_timeframe="2M")
     with pytest.raises(ValueError):
         UserSettings(watchlist=[WatchItem(symbol="bad sym")])
 

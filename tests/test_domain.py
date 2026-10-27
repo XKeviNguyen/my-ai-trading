@@ -10,7 +10,7 @@ from my_ai_trading.fixtures import DEMO_INSTRUMENT, candles_from_closes, series_
 def test_timeframe_allowlist_and_durations():
     assert Timeframe("4h").duration_ms == 4 * 3_600_000
     assert Timeframe("1w").duration_ms == 7 * DAY_MS
-    for bad in ("1M", "2d", "1H", "", "1h; DROP"):
+    for bad in ("2M", "1Y", "2d", "1H", "", "1h; DROP"):
         with pytest.raises(ValueError):
             Timeframe(bad)
 
@@ -87,3 +87,27 @@ def test_up_to_excludes_bars_not_closed_at_as_of():
     cut = s.up_to(s.candles[2].close_time_ms + 1)
     assert cut.candles == s.candles[:3]
     assert s.up_to(s.candles[2].close_time_ms).candles == s.candles[:2]
+
+
+def test_calendar_month_timeframe_is_exact():
+    from datetime import datetime, timezone
+    from my_ai_trading.fixtures import candles_from_closes
+
+    def ms(y, m, d=1):
+        return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp() * 1000)
+    tf = Timeframe("1M")
+    assert tf.is_calendar and tf.next_open_ms(ms(2024, 1)) == ms(2024, 2)
+    assert tf.next_open_ms(ms(2024, 12)) == ms(2025, 1)
+    assert tf.next_open_ms(ms(2024, 2)) - ms(2024, 2) == 29 * DAY_MS  # leap February
+    assert tf.bars_between(ms(2024, 11), ms(2025, 2)) == 3
+    assert not tf.is_aligned_open(ms(2024, 1, 2))
+    cs = candles_from_closes([1.0 + i for i in range(14)], "1M")
+    s = CandleSeries(DEMO_INSTRUMENT, tf, tuple(cs))
+    assert s.gaps == () and cs[1].open_time_ms == ms(2025, 2)
+    gapped = CandleSeries(DEMO_INSTRUMENT, tf, tuple(cs[:3] + cs[6:]))
+    assert gapped.missing_bars() == 3
+    with pytest.raises(ValueError, match="duration"):  # a 30-day bar labeled as a month
+        CandleSeries(DEMO_INSTRUMENT, tf, (replace(cs[0], close_time_ms=cs[0].open_time_ms + 30 * DAY_MS - 1),))
+    last_close = cs[-1].close_time_ms
+    assert not s.is_stale(last_close + 20 * DAY_MS)
+    assert s.is_stale(tf.next_bar_close_ms(last_close) + 10 * 60_000)

@@ -162,3 +162,25 @@ def test_no_model_configured_means_no_provider_and_unknown_prices(monkeypatch):
         AnthropicProvider()
     assert default_provider() is None
     assert estimate_cost("any-model", 1000, 200) is None
+
+
+def test_ai_cache_hit_is_free_and_new_bars_miss(monkeypatch):
+    monkeypatch.setenv("MY_AI_TRADING_PRICES", PRICES)
+    store = store_with(llm_data_consent=True)
+    llm = FakeLLM()
+    cp = Copilot(store, llm)
+    snap = scenario_j_snapshot()
+    first = cp.ask("Is the breakout confirmed?", snap)
+    second = cp.ask("Is the breakout confirmed?", {**snap, "as_of_utc": "later", "as_of_ms": 1})
+    assert len(llm.calls) == 1  # request clock changed, closed bars did not: served from cache
+    assert second["interpretation"]["text"] == first["interpretation"]["text"]
+    assert second["interpretation"]["estimated_cost_usd"] == 0.0
+    usage = store.usage_summary()
+    assert usage["cache_hits"] == 1 and usage["cache_hit_rate"] == 0.5
+    moved = {**snap, "timeframes": {**snap["timeframes"], "1d": {**snap["timeframes"]["1d"],
+                                                                 "bar_close_time_utc": "2099-01-01T00:00:00Z"}}}
+    cp.ask("Is the breakout confirmed?", moved)
+    assert len(llm.calls) == 2  # a newly closed bar changes the facts: cache miss
+    store.save_settings(UserSettings(llm_data_consent=False))
+    out = cp.ask("Is the breakout confirmed?", snap)
+    assert out["route"] == "deterministic" and len(llm.calls) == 2  # no consent: no cached AI text either

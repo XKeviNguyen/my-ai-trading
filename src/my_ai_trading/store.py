@@ -42,6 +42,13 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, feature TEXT NOT NULL, provider TEXT NOT NULL,
   model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cost_usd REAL,
   latency_ms INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS ai_cache (
+  key TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  payload_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, instrument_key TEXT NOT NULL,
+  title TEXT NOT NULL, json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS reports_user_time ON reports(user_id, created_at DESC);
 """
 
 
@@ -223,10 +230,10 @@ class Store:
         return [{**{k: r[k] for k in r.keys() if k != "payload_json"}, "payload": json.loads(r["payload_json"])}
                 for r in rows]
 
-    def cooldown_ok(self, key: str, bar_open_ms: int, cooldown_bars: int, bar_ms: int) -> bool:
-        """True when at least ``cooldown_bars`` bars separate this bar from the last alert (1 = every bar)."""
+    def cooldown_last(self, key: str) -> int | None:
+        """Bar open time of the last alert for ``key`` (callers count bars with Timeframe.bars_between)."""
         rows = self._q("SELECT last_bar_open_ms FROM cooldowns WHERE key=?", (key,))
-        return not rows or bar_open_ms - rows[0]["last_bar_open_ms"] >= cooldown_bars * bar_ms
+        return rows[0]["last_bar_open_ms"] if rows else None
 
     def mark_cooldown(self, key: str, bar_open_ms: int) -> None:
         self._x("INSERT INTO cooldowns VALUES(?,?) ON CONFLICT(key) DO UPDATE SET "
@@ -247,13 +254,50 @@ class Store:
                 "status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (user, feature, provider, model, input_tokens, output_tokens, cost_usd, latency_ms, status, _now()))
 
+    # ---- AI response cache (per user; local only) ----
+    def cache_get(self, key: str, user: str) -> dict[str, Any] | None:
+        rows = self._q("SELECT payload_json FROM ai_cache WHERE key=? AND user_id=? AND expires_at>?", (key, user, _now()))
+        return json.loads(rows[0]["payload_json"]) if rows else None
+
+    def cache_put(self, key: str, user: str, payload: dict[str, Any], *, ttl_ms: int) -> None:
+        now = _now()
+        with self._lock:
+            self._db.execute("DELETE FROM ai_cache WHERE expires_at<=?", (now,))
+            self._db.execute("INSERT INTO ai_cache VALUES(?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                             "payload_json=excluded.payload_json, expires_at=excluded.expires_at, "
+                             "created_at=excluded.created_at", (key, user, now, now + ttl_ms, json.dumps(payload)))
+
+    # ---- saved analysis reports ----
+    def save_report(self, report: dict[str, Any], *, title: str, instrument_key: str, user: str = LOCAL_USER) -> str:
+        rid = uuid.uuid4().hex[:12]
+        self._x("INSERT INTO reports VALUES(?,?,?,?,?,?)",
+                (rid, user, _now(), instrument_key, title[:120], json.dumps(report, default=str)))
+        return rid
+
+    def reports(self, user: str = LOCAL_USER, *, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._q("SELECT id, created_at, instrument_key, title FROM reports WHERE user_id=? "
+                       "ORDER BY created_at DESC LIMIT ?", (user, min(max(limit, 1), 200)))
+        return [dict(r) for r in rows]
+
+    def report(self, rid: str, user: str = LOCAL_USER) -> dict[str, Any] | None:
+        rows = self._q("SELECT * FROM reports WHERE id=? AND user_id=?", (rid, user))
+        if not rows:
+            return None
+        r = rows[0]
+        return {"id": r["id"], "created_at": r["created_at"], "instrument_key": r["instrument_key"],
+                "title": r["title"], "report": json.loads(r["json"])}
+
     def usage_summary(self, user: str = LOCAL_USER, *, since_ms: int | None = None) -> dict[str, Any]:
         since = since_ms if since_ms is not None else _month_start_ms()
         rows = self._q("SELECT feature, provider, model, COUNT(*) n, SUM(input_tokens) i, SUM(output_tokens) o, "
                        "SUM(cost_usd) c, SUM(cost_usd IS NULL) unknown_cost, AVG(latency_ms) lat FROM ai_usage "
                        "WHERE user_id=? AND created_at>=? GROUP BY feature, provider, model", (user, since))
         items = [dict(r) for r in rows]
-        return {"since_ms": since, "by_feature_model": items,
+        hits = self._q("SELECT COUNT(*) n FROM ai_usage WHERE user_id=? AND created_at>=? AND status='cache_hit'",
+                       (user, since))[0]["n"]
+        calls = sum(r["n"] for r in items)
+        return {"since_ms": since, "by_feature_model": items, "cache_hits": hits,
+                "cache_hit_rate": round(hits / calls, 4) if calls else None,
                 "total_tokens": sum((r["i"] or 0) + (r["o"] or 0) for r in items),
                 "total_cost_usd": round(sum(r["c"] or 0 for r in items), 6),
                 "calls_with_unknown_cost": sum(r["unknown_cost"] or 0 for r in items)}

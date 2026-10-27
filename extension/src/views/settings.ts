@@ -1,7 +1,8 @@
 // Settings: API token + connection test, watchlist, analysis timeframe, quiet hours, alerts pause,
 // AI consent / deep-analysis opt-in, monthly budgets. Saved with PUT /api/v1/settings (full object).
 
-import { ApiError } from "../api.js";
+
+import { ApiError, TIMEFRAMES } from "../api.js";
 import type { App, View } from "../app.js";
 import { field, h, setChildren, status } from "../dom.js";
 import { clearToken, getToken, setToken } from "../storage.js";
@@ -102,7 +103,7 @@ export class SettingsView implements View {
       await this.test(out);
       void this.loadPrefs();
     });
-    return h("section", { "aria-labeledby": "conn-h" }, h("h3", { id: "conn-h" }, "Connection"), form);
+    return h("section", { "aria-labelledby": "conn-h" }, h("h3", { id: "conn-h" }, "Connection"), form);
   }
 
   private async test(out: HTMLElement): Promise<void> {
@@ -129,7 +130,7 @@ export class SettingsView implements View {
   }
 
   private renderPrefs(s: UserSettings): void {
-    const atf = h("select", null, ["1h", "4h", "1d", "1w"].map((t) => h("option", { value: t }, t)));
+    const atf = h("select", null, TIMEFRAMES.map((t) => h("option", { value: t }, t)));
     atf.value = s.analysis_timeframe;
 
     // watchlist

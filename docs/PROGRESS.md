@@ -23,6 +23,12 @@ States are *implemented + offline-tested* unless marked otherwise. Nothing has b
 | Backtester (next-open fills, costs, funding, stops, gaps, walk-forward) | `backtest.py` | F10 | `tests/test_backtest.py` |
 | ML baseline (leak-free dataset, purged split, baselines) | `ml.py` | §5, R6 | `tests/test_ml.py` (sklearn test skipped: not installed) |
 | Screenshot analysis: OpenCV candle geometry, Tesseract OCR (symbol, timeframe, MA labels, price axis), cross-checks against exchange data, decompression-bomb guard | `chartvision.py` | F08 | `tests/test_chartvision.py` (real-Tesseract test skipped: not installed) |
+| MACD, Bollinger Bands, ADX; chart patterns (VCP, cup and handle, head and shoulders, flags, triangles, wedges, supply/demand zones); pattern alerts on the newest closed bar | `indicators.py`, `patterns.py`, `monitor.py` | F02, F04, F06 | `tests/test_indicators.py`, `tests/test_patterns.py` (no-look-ahead property test; 11,370-prefix stress run: 0 mismatches) |
+| Calendar-month (1M) timeframe with exact calendar arithmetic | `domain.py` | F03 | `tests/test_domain.py` |
+| Evaluators: Williams volatility breakout, Raschke Holy Grail, Brandt classical patterns | `strategies.py` | F04 | `tests/test_strategies.py` |
+| Walk-forward ML (logistic regression, LightGBM), calibration, leakage check | `ml.py` | §5, F10 | `tests/test_ml.py` |
+| Saved and exportable analysis reports; AI response cache with hit rate | `reports.py`, `store.py`, `copilot.py`, `api.py` | F09, F11 | `tests/test_api.py`, `tests/test_thesis_copilot.py` |
+| Desktop app (PySide6, client of the local API; all side-panel features plus Reports) | `desktop/` | F11 | `desktop/tests` (68 tests, offscreen, real engine in-process); entry point launched offscreen |
 | Local API (Host allowlist, token, CORS, rate limit) + CLI | `api.py`, `cli.py` | F11 | `tests/test_api.py` |
 
 Test command: `.venv/bin/python -m pytest` — see the latest result in the session report.
@@ -57,13 +63,15 @@ Known and documented, not changed: after an outage the monitor evaluates only th
 
 ## Not implemented / not verified
 
+- Desktop app on a real X11/Wayland display, tray notifications, dark theme and screen readers (tested offscreen only). Desktop tests are not in CI yet (Qt needs extra system libraries on the runner).
+
 - **Live data:** only the single read-only `analyze` run above. The monitor, API server and dry-run have not been run live.
 - **Live AI:** the Anthropic adapter is untested against the real API; it needs `pip install '.[ai]'`, credentials, `MY_AI_TRADING_MODEL`, consent in Settings, and optionally `MY_AI_TRADING_PRICES` for dollar estimates.
 - **Chrome extension:** integrated (`extension/`, guide in `docs/EXTENSION.md`). 33/33 unit tests pass, and it was exercised end to end in headless Chrome against the real API code with synthetic data. Not yet tried: opening the side panel from the toolbar, real desktop notifications, symbol detection from a real Binance tab, live data, screen readers, and real 200% browser zoom.
 - WebSocket streaming. The monitor polls REST once per bar close, which is enough for ≥1m bars and needs no extra dependency.
 - Equity session calendars, licensed fundamentals/macro data, RS universe ranking, VCP detection, Brandt pattern recognition, and the other 16 profiles (catalog-only).
-- OCR has not run against the real Tesseract program (not installed here: `sudo apt install tesseract-ocr`). Geometry and text parsing are tested with synthetic charts and an injected OCR engine.
-- LightGBM, PyTorch/PEFT (not installed; not needed by current features).
+- OCR runs against the real Tesseract 5.5 on synthetic charts. It has not been tested on real exchange screenshots.
+- PyTorch, Hugging Face, PEFT/LoRA: not installed. They need real datasets, evaluation goals, hardware and licenses first (PRD §5).
 - Python 3.11 compatibility is targeted (`requires-python >= 3.11`, CI matrix) but only 3.14.4 has been run locally.
 - Full-history secret scanning (Gitleaks), remote branch protection on `main` (currently **unprotected**; repo is **public**).
 

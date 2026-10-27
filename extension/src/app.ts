@@ -5,7 +5,7 @@ import { h, status } from "./dom.js";
 import type { Instrument } from "./symbol.js";
 import type { Profile, UserSettings } from "./types.js";
 
-export type TabId = "analysis" | "copilot" | "studio" | "alerts" | "usage" | "methods" | "settings";
+export type TabId = "analysis" | "copilot" | "studio" | "alerts" | "reports" | "usage" | "methods" | "settings";
 
 export interface View {
   /** Called when the tab becomes visible. */

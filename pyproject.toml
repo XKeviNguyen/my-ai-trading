@@ -14,7 +14,8 @@ dependencies = ["pydantic>=2.12,<3"]
 [project.optional-dependencies]
 api = ["fastapi>=0.120,<1", "uvicorn>=0.38,<1", "python-multipart>=0.0.20,<1"]
 ai = ["anthropic>=1.0,<2"]
-vision = ["opencv-python-headless>=4.10,<6"]  # OCR also needs the system tesseract program
+vision = ["opencv-python-headless>=4.10,<6"]
+ml = ["scikit-learn>=1.6,<2", "lightgbm>=4.5,<5"]  # OCR also needs the system tesseract program
 test = ["pytest>=9,<10", "hypothesis>=6.140,<7", "httpx2>=2.16,<3"]  # Starlette TestClient transport
 
 [project.scripts]

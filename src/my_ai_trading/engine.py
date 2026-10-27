@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .domain import CandleSeries
-from .indicators import (atr_sma_tr, atr_wilder, ema, prior_high, prior_low, rsi_wilder, sma,
-                         sma_series, true_ranges, volume_ratio)
+from .indicators import (adx, atr_sma_tr, atr_wilder, bollinger, ema, macd, prior_high, prior_low, rsi_wilder,
+                         sma, sma_series, true_ranges, volume_ratio)
 
 ENGINE_VERSION = "fast-engine/0.2.0"
 SMA_PERIODS = (7, 25, 50, 100, 150, 200)
@@ -59,6 +59,7 @@ def analyze(series: CandleSeries, *, as_of_ms: int) -> dict[str, Any]:
     sma_now = {n: sma(closes, n) for n in SMA_PERIODS}
     vr = volume_ratio(tail, PIVOT_LOOKBACK)
     ph, pl = prior_high(tail, PIVOT_LOOKBACK), prior_low(tail, PIVOT_LOOKBACK)
+    m, bb, dx = macd(closes), bollinger(closes), adx(tail)
     indicators = {
         **{f"sma{n}": _r(v) for n, v in sma_now.items()},
         "ema21": _r(ema(closes, 21)),
@@ -68,6 +69,13 @@ def analyze(series: CandleSeries, *, as_of_ms: int) -> dict[str, Any]:
         "volume_ratio_20": _r(vr, 6),
         "prior_high_20": _r(ph),
         "prior_low_20": _r(pl),
+        "macd_12_26": _r(m and m["macd"]), "macd_signal_9": _r(m and m["signal"]),
+        "macd_histogram": _r(m and m["histogram"]),
+        "bollinger_20_2_upper": _r(bb and bb["upper"]), "bollinger_20_2_lower": _r(bb and bb["lower"]),
+        "bollinger_20_2_percent_b": _r(bb and bb["percent_b"], 4),
+        "bollinger_20_2_bandwidth": _r(bb and bb["bandwidth"], 6),
+        "adx14": _r(dx and dx["adx"], 4), "plus_di14": _r(dx and dx["plus_di"], 4),
+        "minus_di14": _r(dx and dx["minus_di"], 4),
     }
     for name, v in indicators.items():
         if v is None:

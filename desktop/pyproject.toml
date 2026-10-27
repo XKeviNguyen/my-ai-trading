@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my-ai-trading-desktop"
+version = "0.1.0"
+description = "Native PySide6 desktop client for the local, read-only My AI Trading engine API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Proprietary - no license chosen yet"}
+# Only the Essentials wheel (QtCore/QtGui/QtWidgets) is needed; the full PySide6 meta-package also
+# pulls in WebEngine and other add-ons the client does not use.
+dependencies = ["PySide6-Essentials>=6.8,<7"]
+
+[project.optional-dependencies]
+# Tests start the real engine API in-process, so they need the core package with its api/test extras
+# (install it from the repository root: pip install -e '..[api,test]').
+test = ["pytest>=9,<10"]
+
+[project.gui-scripts]
+my-ai-trading-desktop = "my_ai_trading_desktop.app:main"
+
+[tool.setuptools.packages.find]
+include = ["my_ai_trading_desktop*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"

@@ -76,8 +76,18 @@ export interface TimeframeReport {
   trend?: { state?: string; reason?: string; conditions?: Record<string, boolean> };
   levels?: Record<string, number | null>;
   events?: MarketEvent[];
+  patterns?: PatternDetection[];
   missing_inputs?: string[];
   data_quality?: { closed_bars?: number; contiguous_bars?: number; gaps?: number; missing_bars?: number; stale?: boolean };
+}
+
+export interface PatternDetection {
+  pattern: string;
+  state: string;
+  end_bar_open_ms?: number;
+  key_levels?: Record<string, number | boolean | null>;
+  invalidation?: string;
+  note?: string;
 }
 
 export interface Alignment {
@@ -364,8 +374,21 @@ export interface UsageRow {
   lat: number | null;
 }
 
+export interface ReportSummary {
+  id: string;
+  created_at: number;
+  instrument_key: string;
+  title: string;
+}
+
+export interface ReportsResponse {
+  reports: ReportSummary[];
+}
+
 export interface UsageResponse {
   since_ms: number;
+  cache_hits?: number;
+  cache_hit_rate?: number | null;
   by_feature_model: UsageRow[];
   total_tokens: number;
   total_cost_usd: number;

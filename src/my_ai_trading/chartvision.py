@@ -168,7 +168,7 @@ def _ocr_ready(region):
 
 
 SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,15})[/\-]?(USDT|USDC|FDUSD|BUSD|USD|BTC|ETH)\b")
-TF_RE = re.compile(r"^(1|3|5|15|30)m$|^(1|2|4|6|8|12)[hH]$|^(1|3)[dD]$|^1[wW]$")
+TF_RE = re.compile(r"^(1|3|5|15|30)m$|^(1|2|4|6|8|12)[hH]$|^(1|3)[dD]$|^1[wW]$|^1M$")
 MA_RE = re.compile(r"\b(MA|SMA|EMA)\s*\(?\s*(\d{1,3})\s*\)?", re.I)
 PRICE_RE = re.compile(r"^\d{1,7}(?:[.,]\d{1,8})?$")
 
@@ -180,7 +180,7 @@ def parse_chart_text(title_words: list[dict[str, Any]], axis_words: list[dict[st
     for w in title_words:
         t = w["text"].strip("()[],")
         if TF_RE.match(t):
-            code = t.lower()
+            code = "1M" if t == "1M" else t.lower()  # 1M is a month, 1m a minute
             if code in Timeframe.all_codes():
                 tfs.append(code)
     mas = sorted({f"{k.upper()}{n}" for k, n in MA_RE.findall(text)})
@@ -247,6 +247,7 @@ def analyze_screenshot(data: bytes, *, expected_symbol: str | None = None,
         import cv2  # noqa: F401
     except ImportError:
         validate_image(data)
+        image_dimensions(data)  # still reject files that only mimic an image signature
         out["status"] = "OPENCV_UNAVAILABLE"
         out["reason"] = "install the vision extra: pip install -e '.[vision]'"
         return out

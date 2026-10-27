@@ -124,3 +124,13 @@ def test_copilot_runs_local_analysis_without_ai_and_without_consent():
     out = Copilot(store, None).analyze_chart_image(draw_chart(), "patterns?", None, expected_symbol="SANDUSDT")
     assert out["route"] == "local" and out["local_analysis"]["geometry"]["state"] == "DETECTED"
     assert out["visual_hypotheses"] is None and "No AI provider" in out["fallback_reason"]
+
+
+def test_without_opencv_fake_images_are_still_rejected(monkeypatch):
+    import sys
+    from fakes import tiny_png
+    monkeypatch.setitem(sys.modules, "cv2", None)  # simulate the vision extra not installed
+    with pytest.raises(ValueError):
+        analyze_screenshot(b"\x89PNG\r\n\x1a\n000")
+    out = analyze_screenshot(tiny_png())
+    assert out["status"] == "OPENCV_UNAVAILABLE"

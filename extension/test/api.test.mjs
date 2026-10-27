@@ -155,3 +155,15 @@ test("PUT settings sends the full object as JSON", async () => {
   assert.equal(calls[0].init.headers["Content-Type"], "application/json");
   assert.deepEqual(r, settings);
 });
+
+test("report markdown is returned as text; report ids and symbols are validated", async () => {
+  const md = "# Report\n\n| 1h | OK |";
+  const { c, calls } = client(() => new Response(md, { status: 200, headers: { "Content-Type": "text/markdown" } }));
+  assert.equal(await c.reportMarkdown("0123456789ab"), md);
+  assert.match(calls[0].url, /\/api\/v1\/reports\/0123456789ab\?format=markdown$/);
+  await assert.rejects(c.reportMarkdown("../../etc"), ApiError);
+  await assert.rejects(c.saveReport("bad sym", "usdm_perpetual"), ApiError);
+  assert.equal(calls.length, 1);
+  const err = client(() => json(404, { detail: "report not found" }));
+  await assert.rejects(err.c.reportMarkdown("0123456789ab"), (e) => e instanceof ApiError && e.status === 404);
+});

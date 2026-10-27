@@ -1,6 +1,7 @@
 // Side panel entry: instrument bar (tab URL detection or manual entry), accessible tabs, views.
 
 import { App, type TabId, type View } from "./app.js";
+import { TIMEFRAMES } from "./api.js";
 import { h, setChildren } from "./dom.js";
 import { makeClient } from "./storage.js";
 import { isMarket, marketLabel, normalizeSymbol, parseBinanceUrl, type Instrument } from "./symbol.js";
@@ -8,6 +9,7 @@ import { AlertsView } from "./views/alerts.js";
 import { AnalysisView } from "./views/analysis.js";
 import { CopilotView } from "./views/copilot.js";
 import { MethodsView } from "./views/methods.js";
+import { ReportsView } from "./views/reports.js";
 import { SettingsView } from "./views/settings.js";
 import { StudioView } from "./views/studio.js";
 import { UsageView } from "./views/usage.js";
@@ -52,6 +54,7 @@ views.set("analysis", new AnalysisView($("panel-analysis"), app));
 views.set("copilot", new CopilotView($("panel-copilot"), app));
 views.set("studio", new StudioView($("panel-studio"), app));
 views.set("alerts", new AlertsView($("panel-alerts"), app));
+views.set("reports", new ReportsView($("panel-reports"), app));
 views.set("usage", new UsageView($("panel-usage"), app));
 views.set("methods", new MethodsView($("panel-methods"), app));
 views.set("settings", new SettingsView($("panel-settings"), app));
@@ -154,7 +157,7 @@ async function init(): Promise<void> {
   renderWatchlist();
   try {
     const s = await app.settings();
-    if (["1h", "4h", "1d", "1w"].includes(s.analysis_timeframe)) tfSel.value = s.analysis_timeframe;
+    if ((TIMEFRAMES as readonly string[]).includes(s.analysis_timeframe)) tfSel.value = s.analysis_timeframe;
     app.analysisTf = tfSel.value;
     renderWatchlist();
   } catch {

@@ -74,7 +74,7 @@ def test_schema_rejects_unknown_fields_float_equality_and_oversize():
         {**base, "condition": {**base["condition"], "op": "=="}},
         {**base, "condition": {**base["condition"], "right": float("nan")}},
         {**base, "condition": {**base["condition"], "left": {"name": "sma", "timeframe": "1h"}}},
-        {**base, "condition": {**base["condition"], "left": {"name": "close", "timeframe": "1M"}}},
+        {**base, "condition": {**base["condition"], "left": {"name": "close", "timeframe": "2M"}}},
         {**base, "name": "<script>"},
         {**base, "condition": {"kind": "all", "items": [base["condition"]] * 17}},
     ):
@@ -140,3 +140,24 @@ def test_preview_is_human_readable_and_hash_is_stable():
     assert "on each CLOSED 4h bar" == pv["when"]
     assert "SMA(25) on 4h" in pv["condition"] and "trend on 1d is UP" in pv["condition"]
     assert compile_prompts([PRD_EXAMPLE]).rule.rule_hash() == rule.rule_hash()
+
+
+def test_monthly_timeframe_in_prompts_is_not_confused_with_minutes():
+    p = compile_prompts(["1M close above SMA12 and 1m close above EMA20"])
+    left, right = p.rule.condition.items
+    assert left.left.timeframe == "1M" and right.left.timeframe == "1m"
+    assert compile_prompts(["monthly close above SMA10"]).rule.trigger_timeframe == "1M"
+
+
+def test_new_indicator_phrases_compile_and_evaluate():
+    p = compile_prompts(["daily ADX above 25", "also require MACD crosses above signal on 1d",
+                         "and daily close above the upper Bollinger band"])
+    kinds = [(c.left.name, c.op, c.right) for c in p.rule.condition.items]
+    assert kinds == [("adx", ">", 25.0), ("macd_histogram", "crosses_above", 0.0), ("bollinger_percent_b", ">", 1.0)]
+    assert any("12/26/9" in a for a in p.assumptions) and any("20 periods" in a for a in p.assumptions)
+    s = series_from_closes(uptrend_closes(300))
+    r = evaluate(p.rule, _getter(**{"1d": s}), as_of_ms=s.candles[-1].close_time_ms + 1)
+    assert r["result"] in ("MATCH", "NO_MATCH") and len(r["leaves"]) == 3
+    assert all(leaf["left"] is not None for leaf in r["leaves"])
+    with pytest.raises(ValidationError):
+        MetricRef(name="macd_histogram", period=12, timeframe="1d")

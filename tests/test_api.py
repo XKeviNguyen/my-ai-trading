@@ -174,3 +174,27 @@ def test_backtest_endpoint_rule_event_walk_forward_and_validation(env):
                   headers=H).status_code == 422
     assert c.post("/api/v1/backtest", json={"symbol": "SANDUSDT", "event_type": "BREAKOUT",
                                             "config": {"hold_bars": 5, "leverage": 100}}, headers=H).status_code == 422
+
+
+def test_reports_save_list_export_json_and_markdown(env):
+    c, _, _ = env
+    s = c.get("/api/v1/settings", headers=H).json()
+    s["selected_methodologies"] = [{"methodology_id": "weinstein", "mode": "NATIVE"}]
+    c.put("/api/v1/settings", json=s, headers=H)
+    saved = c.post("/api/v1/reports", json={"symbol": "SANDUSDT", "analysis_timeframe": "1h"}, headers=H).json()
+    rid = saved["id"]
+    assert [r["id"] for r in c.get("/api/v1/reports", headers=H).json()["reports"]] == [rid]
+    full = c.get(f"/api/v1/reports/{rid}", headers=H).json()
+    assert full["report"]["perspectives"]["perspectives"][0]["assessment"]["methodology_id"] == "weinstein"
+    md = c.get(f"/api/v1/reports/{rid}?format=markdown", headers=H)
+    assert md.status_code == 200 and md.headers["content-type"].startswith("text/markdown")
+    assert "attachment" in md.headers["content-disposition"]
+    text = md.text
+    assert "| 1h |" in text and "Stan Weinstein" in text and "Not financial advice" in text
+    assert c.get("/api/v1/reports/000000000000", headers=H).status_code == 404
+    assert c.get("/api/v1/reports/../../etc", headers=H).status_code in (404, 422)
+
+
+def test_markdown_escapes_untrusted_text():
+    from my_ai_trading.reports import _md
+    assert _md("a|b*c_d\nx") == "a\\|b\\*c\\_d x"

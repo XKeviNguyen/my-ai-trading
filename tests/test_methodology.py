@@ -77,7 +77,7 @@ def test_unverified_methods_and_missing_data():
     assert assess(BY_ID["seykota"], SAND, "1d").status is Applicability.UNVERIFIED_METHOD
     assert assess(BY_ID["ptj"], SAND, "1d").status is Applicability.UNVERIFIED_METHOD
     assert assess(BY_ID["kullamagi"], SAND, "1d").status is Applicability.INSUFFICIENT_DATA  # catalysts
-    a = assess(BY_ID["brandt"], SAND, "1d")
+    a = assess(BY_ID["livermore"], SAND, "1d")
     assert a.status is Applicability.SUPPORTED_NATIVE and not a.evaluate  # catalog only
     with pytest.raises(ValueError):
         assess(BY_ID["brandt"], SAND, "1d", AnalysisMode.CUSTOM)

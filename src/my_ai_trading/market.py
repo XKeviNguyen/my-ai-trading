@@ -12,6 +12,7 @@ from typing import Any, Callable, Protocol
 
 from .domain import Candle, CandleSeries, InstrumentIdentity, MarketType, Timeframe
 from .engine import analyze, utc_iso
+from .patterns import recent_patterns
 from .providers.binance import MarketDataError, validate_symbol
 
 CLOSE_SAFETY_MS = 1_500        # bar counts as closed only this long after its end (clock skew)
@@ -96,7 +97,7 @@ class MarketDataService:
         with self._lock_for(key):  # single-flight per key: concurrent callers share one fetch
             cached = self._cache.get(key, [])
             have_enough = len(cached) >= bars or self._history_start.get(key, False)
-            next_close_due = cached[-1].close_time_ms + tf.duration_ms if cached else -1
+            next_close_due = tf.next_bar_close_ms(cached[-1].close_time_ms) + 1 if cached else -1
             if not cached or not have_enough or now > next_close_due + CLOSE_SAFETY_MS:
                 # +1: the newest row returned is usually the still-forming bar, which is dropped.
                 full = min(bars + 1, 1500)
@@ -135,6 +136,7 @@ class MarketDataService:
                 s = self.series(instrument, code, bars=bars, now_ms=now)
                 series[code] = s
                 reports[code] = analyze(s, as_of_ms=now)
+                reports[code]["patterns"] = [] if reports[code]["status"] == "STALE_DATA" else recent_patterns(s)
             except MarketDataError as exc:
                 reports[code] = {"timeframe": code, "status": "PROVIDER_ERROR", "error": str(exc)}
         return {"instrument": instrument.as_dict(), "as_of_ms": now, "as_of_utc": utc_iso(now),
