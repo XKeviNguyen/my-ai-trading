@@ -140,28 +140,32 @@ def _parse_clause(text: str, default_tf: str | None, assumptions: list[str],
         return Compare(left=MetricRef(name="adx", period=int(m.group("n") or 14), timeframe=tf),
                        op="<" if m.group("dir") in ("below", "under") else ">", right=float(m.group("v")))
 
-    m = re.search(rf"macd(?: line)? cross(?:es)? (?P<dir>above|below) (?:the )?signal(?: line)?(?: on (?:the )?{_TF})?", t)
+    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: line)? cross(?:es)? (?P<dir>above|below) (?:the )?signal(?: line)?"
+                  rf"(?: on (?:the )?{_TF})?", t)
     if m:
-        tf = need_tf(m.group("tf"), text)
+        tf = need_tf(m.group("tf") or m.group("tf0"), text)
         if not tf:
             return None
         assumptions.append("MACD uses the standard 12/26/9 periods")
         return Compare(left=MetricRef(name="macd_histogram", timeframe=tf),
                        op="crosses_above" if m.group("dir") == "above" else "crosses_below", right=0.0)
 
-    m = re.search(rf"macd(?: histogram)? (?:is )?(?P<dir>above|below|over|under) (?:zero|0)(?: on (?:the )?{_TF})?", t)
+    m = re.search(rf"(?:{_TF.replace('tf', 'tf0')} )?macd(?: (?P<part>histogram|line))? (?:is )?(?P<dir>above|below|over|under) "
+                  rf"(?:zero|0)(?: on (?:the )?{_TF})?", t)
     if m:
-        tf = need_tf(m.group("tf"), text)
+        tf = need_tf(m.group("tf") or m.group("tf0"), text)
         if not tf:
             return None
         assumptions.append("MACD uses the standard 12/26/9 periods")
-        return Compare(left=MetricRef(name="macd_histogram", timeframe=tf),
+        # Bare "MACD" is the MACD line; only an explicit "histogram" tests MACD minus signal.
+        name = "macd_histogram" if m.group("part") == "histogram" else "macd_line"
+        return Compare(left=MetricRef(name=name, timeframe=tf),
                        op=">" if m.group("dir") in ("above", "over") else "<", right=0.0)
 
     m = re.search(rf"(?:{_TF} )?(?:close|price) (?:closes |is )?(?P<dir>above|below) (?:the )?(?P<band>upper|lower) "
-                  r"bollinger(?: band)?", t)
+                  rf"bollinger(?: band)?(?: on (?:the )?{_TF.replace('tf', 'tf2')})?", t)
     if m:
-        tf = need_tf(m.group("tf"), text)
+        tf = need_tf(m.group("tf") or m.group("tf2"), text)
         if not tf:
             return None
         assumptions.append("Bollinger Bands use 20 periods and 2 standard deviations")

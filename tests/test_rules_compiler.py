@@ -161,3 +161,36 @@ def test_new_indicator_phrases_compile_and_evaluate():
     assert all(leaf["left"] is not None for leaf in r["leaves"])
     with pytest.raises(ValidationError):
         MetricRef(name="macd_histogram", period=12, timeframe="1d")
+
+
+@pytest.mark.parametrize("prompt", [
+    "close above the upper Bollinger band on 1d",   # trailing timeframe
+    "daily MACD crosses above signal",              # leading timeframe
+    "MACD crosses above the signal line on 1d",
+    "1d MACD histogram below zero",
+    "daily RSI below 30",
+])
+def test_explicit_indicator_timeframe_is_never_replaced_by_the_chart_default(prompt):
+    p = compile_prompts([prompt], default_timeframe="1h")
+    assert p.rule is not None, p.as_dict()
+    assert p.rule.condition.left.timeframe == "1d"
+    assert not any("assumed chart timeframe" in a for a in p.assumptions)
+
+
+def test_bare_macd_zero_test_uses_the_macd_line_not_the_histogram():
+    from my_ai_trading.indicators import macd
+    from my_ai_trading.rules import metric_value
+    line = compile_prompts(["MACD above zero on 1d"]).rule.condition
+    explicit_line = compile_prompts(["MACD line above zero on 1d"]).rule.condition
+    hist = compile_prompts(["MACD histogram above zero on 1d"]).rule.condition
+    assert line.left.name == explicit_line.left.name == "macd_line"
+    assert hist.left.name == "macd_histogram"
+    # A slowing uptrend: the MACD line stays positive while the histogram turns negative.
+    closes = [100 * 1.01 ** i for i in range(80)] + [100 * 1.01 ** 79] * 8
+    tail = tuple(candles_from_closes(closes))
+    expected = macd(closes)
+    assert expected["macd"] > 0 > expected["histogram"]
+    assert metric_value(line.left, tail) == pytest.approx(expected["macd"])
+    assert metric_value(hist.left, tail) == pytest.approx(expected["histogram"])
+    with pytest.raises(ValidationError):
+        MetricRef(name="macd_line", period=12, timeframe="1d")

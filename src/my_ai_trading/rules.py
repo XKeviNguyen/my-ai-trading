@@ -22,7 +22,7 @@ RULE_SCHEMA_VERSION = 1
 MAX_NODES, MAX_DEPTH = 32, 6
 TimeframeCode = Literal["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
 PERIOD_METRICS = {"sma", "ema", "volume_ratio", "prior_high", "prior_low", "atr_wilder", "rsi_wilder", "adx",
-                  "bollinger_percent_b"}  # macd_histogram uses the standard 12/26/9 periods
+                  "bollinger_percent_b"}  # macd_line and macd_histogram use the standard 12/26/9 periods
 
 
 class _Strict(BaseModel):
@@ -31,7 +31,8 @@ class _Strict(BaseModel):
 
 class MetricRef(_Strict):
     name: Literal["close", "open", "high", "low", "volume", "sma", "ema", "volume_ratio", "prior_high",
-                  "prior_low", "atr_wilder", "rsi_wilder", "adx", "bollinger_percent_b", "macd_histogram"]
+                  "prior_low", "atr_wilder", "rsi_wilder", "adx", "bollinger_percent_b", "macd_line",
+                  "macd_histogram"]
     timeframe: TimeframeCode
     period: int | None = Field(default=None, ge=1, le=500)
     bar: Literal["last_closed", "previous_closed"] = "last_closed"
@@ -244,6 +245,9 @@ def metric_value(m: MetricRef, tail: tuple) -> float | None:
         case "bollinger_percent_b":
             b = bollinger(closes, n)
             return b and b["percent_b"]
+        case "macd_line":
+            ml = macd(closes)
+            return ml and ml["macd"]
         case "macd_histogram":
             mh = macd(closes)
             return mh and mh["histogram"]

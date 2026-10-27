@@ -47,6 +47,8 @@ class AnalysisView(QWidget):
         outer.addWidget(scroll_page(inner), 1)
         self.result.set(plain_label("Enter a symbol above and press Load.", muted=True))
         ctx.instrument_changed.connect(self.on_instrument)
+        # Methodologies, modes and timeframes live in settings, so a saved change makes the analysis out of date.
+        ctx.settings_changed.connect(self.on_instrument)
 
     def key(self) -> str:
         return f"{self.ctx.symbol}|{self.ctx.market}|{self.ctx.analysis_tf}" if self.ctx.symbol else ""

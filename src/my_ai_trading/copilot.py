@@ -298,7 +298,8 @@ def _facts_basis(snapshot: dict[str, Any], perspectives: dict[str, Any] | None) 
     """What the answer depends on: instrument, closed-bar times and states, never the request clock."""
     return {"instrument": snapshot.get("instrument", {}).get("key"),
             "bars": {tf: [r.get("status"), r.get("bar_close_time_utc")] for tf, r in snapshot.get("timeframes", {}).items()},
-            "perspectives": [[p["assessment"]["methodology_id"], p["assessment"]["status"], p.get("evaluation", {}).get("state")]
+            # Full fingerprint: an evaluation on another timeframe can change levels while its state stays the same.
+            "perspectives": [hashlib.sha256(json.dumps(p, sort_keys=True, default=str).encode()).hexdigest()
                              for p in (perspectives or {}).get("perspectives", [])]}
 
 

@@ -271,3 +271,21 @@ def test_engine_down_message(qapp, tmp_path):
     usage.load()
     assert wait_until(lambda: "my-ai-trading serve" in texts(usage.result))
     win.close()
+
+
+def test_saving_methodology_settings_invalidates_the_analysis(window, engine):
+    port, token, _ = engine
+    select_methodologies(port, token, [{"methodology_id": "minervini", "mode": "NATIVE"}])
+    view = window.views["analysis"]
+    window.symbol_edit.setText("sandusdt")
+    window.apply_instrument()
+    assert wait_until(lambda: view.last_data is not None)
+    assert "Methodology perspectives (1)" in texts(view.result)
+    window.select_tab("methods")
+    done = []
+    window.ctx.update_settings_async(lambda s: s.update(selected_methodologies=[]), done.append, done.append)
+    assert wait_until(lambda: done)
+    view.last_data = None
+    window.select_tab("analysis")
+    assert wait_until(lambda: view.last_data is not None)
+    assert "Methodology perspectives (0)" in texts(view.result)

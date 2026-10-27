@@ -184,3 +184,22 @@ def test_ai_cache_hit_is_free_and_new_bars_miss(monkeypatch):
     store.save_settings(UserSettings(llm_data_consent=False))
     out = cp.ask("Is the breakout confirmed?", snap)
     assert out["route"] == "deterministic" and len(llm.calls) == 2  # no consent: no cached AI text either
+
+
+def test_ai_cache_misses_when_a_perspective_changes_but_its_state_does_not(monkeypatch):
+    """A daily methodology on a weekly analysis: a new daily bar moves its level while the state stays."""
+    monkeypatch.setenv("MY_AI_TRADING_PRICES", PRICES)
+    llm = FakeLLM()
+    cp = Copilot(store_with(llm_data_consent=True), llm)
+    snap = scenario_j_snapshot()
+
+    def persp(level):
+        return {"perspectives": [{"assessment": {"methodology_id": "williams", "name": "Larry Williams",
+                                                 "status": "SUPPORTED_NATIVE", "label": "Native",
+                                                 "evaluation_timeframe": "1d"},
+                                  "evaluation": {"state": "UPSIDE_LEVEL_EXCEEDED", "upside_level": level}}]}
+    cp.ask("Is the breakout confirmed?", snap, perspectives=persp(10.0))
+    cp.ask("Is the breakout confirmed?", snap, perspectives=persp(10.0))
+    assert len(llm.calls) == 1  # same facts: served from cache
+    cp.ask("Is the breakout confirmed?", snap, perspectives=persp(11.5))
+    assert len(llm.calls) == 2  # same state, new level: the old answer must not be reused
