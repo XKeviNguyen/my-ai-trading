@@ -234,7 +234,7 @@ Real exchange testnets (no authorized credentials); live LLM calls (no key/budge
 
 **Branch:** `fix/six-breaker-remediation`, from `main` at `9488a2e` (the audit merge). **Fix commit:** the owner commits the branch; this table refers to that branch commit. **Process:** the lead fixed trading, the compiler and evaluator, analytics, the request guard, the store and credentials. Three implementers worked in separate git worktrees with exclusive file ownership (performance; extension and desktop; CI and docs), and the lead integrated their owned files only. Six read-only breakers then re-audited the integrated tree. Their new findings were fixed, and two read-only verifiers retested those fixes. Every lead regression test was first run against the earlier code to confirm it fails there. The two exceptions are noted in the table.
 
-**Final gates (local, 2026-10-28):** Python 561 passed, extension 55/55, desktop 114 passed, 0 failed, 0 skipped. `tools/export_openapi.py --check` reports the spec up to date. `tools/secret_guard.py --history` passes (305 file revisions). The 91 changed or untracked files have no secret findings. There is no new Critical or High.
+**Final gates (local, 2026-10-28, after the Codex review fixes):** Python 563 passed, extension 55/55, desktop 114 passed, 0 failed, 0 skipped. `tools/export_openapi.py --check` reports the spec up to date. `tools/secret_guard.py --history` passes (305 file revisions). The 91 changed or untracked files have no secret findings. There is no new Critical or High.
 
 ### Original findings
 
@@ -247,7 +247,7 @@ Real exchange testnets (no authorized credentials); live LLM calls (no key/budge
 | SEC-1 | Med | Byte-counted, spooled body; chunked refused; duplicate headers refused | `test_request_guard.py` (raw ASGI and real uvicorn) | FIXED |
 | SEC-2 | Med | OKX perm without `read_only` gives all permissions as unknown | `test_adapter_okx.py::test_an_okx_perm_list_without_read_only_*` | FIXED |
 | FLOW-3 | Med | Late miss ignored after a newer confirmation; Cancel for uncertain orders | `test_flow3_*` | FIXED |
-| FLOW-4/ENV-1 | Med | Fallback to a connection with the same exchange, environment and key | `test_flow4_*`, `test_n2_*` | FIXED. Limit: the key hint is the key's last 4 characters |
+| FLOW-4/ENV-1 | Med | Fallback to a connection with the same exchange, environment and key fingerprint | `test_flow4_*`, `test_n2_*`, `test_the_fallback_needs_the_same_key_*` | FIXED |
 | FLOW-5 | Med | Compare-and-set connection metadata | `test_flow5_*` | FIXED |
 | DATA-3 | Med | Reverted: stocks stay non-shortable, because IBKR's 7-day fills made phantom shorts | `test_a_stock_sell_before_the_loaded_history_is_unmatched_*` | **DOCUMENTED LIMIT** (needs per-position shortability) |
 | DATA-4 | Med | Crossings evaluated as of the previous trigger close | `test_multi_timeframe_crossing_*` | FIXED (133,968 oracle checks, 0 mismatches) |
@@ -303,7 +303,8 @@ Real exchange testnets (no authorized credentials); live LLM calls (no key/budge
 | A | Med | First-in-first-out vs average-cost P&L made phantom trades | average-cost tracker | `test_average_cost_*` |
 | Copilot | Low | Overspend when real usage exceeded the reservation | upper-bound input estimate | `test_worst_case_*` (old 44,091 > 40,000) |
 | — | Low | Stuck acknowledged order that is no longer listed or cancellable | — | **DOCUMENTED LIMIT** |
-| D4 | Low | 4-character key hint can collide | — | **DOCUMENTED LIMIT** |
+| D4 | Low | 4-character key hint can collide | Match on a SHA-256 key fingerprint (Codex review, PR #8, P2) | `test_the_fallback_needs_the_same_key_not_just_the_same_last_four_characters` |
+| Codex P1 | Med | A split exit lost part of the reported P&L (FIFO share plus average-cost rest) | The matched share uses average cost too, so the parts add up to the reported P&L | `test_a_split_exit_keeps_the_whole_exchange_reported_pnl` |
 | D5 | Low | Some secret spellings missed (`apiSecret`, `BINANCE_SECRET`) | — | **OPEN**: a generic `SECRET` rule matches a fake constant already in history; Gitleaks is the owner's decision |
 | — | Low | Worst-case windowed rule backtest ≈ 2.2 s; alerts ≈ 840 MB at the extreme watchlist; full cache ≈ 328 MB | — | **OPEN** (follow-ups) |
 

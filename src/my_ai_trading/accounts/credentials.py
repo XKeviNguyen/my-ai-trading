@@ -8,6 +8,7 @@ session-only entries are purged when the app starts. Deleting locally does not r
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets as _secrets
 import threading
@@ -101,6 +102,11 @@ class Credential:
     def key_hint(self) -> str:
         return self.api_key.reveal()[-4:]
 
+    @property
+    def key_fingerprint(self) -> str:
+        """Identifies the key without revealing it (the hint is display-only: many keys share 4 characters)."""
+        return hashlib.sha256(b"my-ai-trading/key-fingerprint/v1\0" + self.api_key.reveal().encode()).hexdigest()[:32]
+
     def _to_vault(self) -> str:
         return json.dumps({"k": self.api_key.reveal(), "s": self.api_secret.reveal(),
                            "p": self.passphrase.reveal() if self.passphrase else None})
@@ -124,6 +130,7 @@ class ConnectionMeta(BaseModel):
     expires_ms: int | None
     key_hint: str
     permissions: KeyPermissions
+    key_fingerprint: str | None = None  # None only for connections saved by older versions
     trading_enabled: bool = False
     purge_pending: bool = False  # the secret could not be deleted from the vault yet; retried on later starts
 
@@ -238,6 +245,7 @@ class CredentialStore:
         meta = ConnectionMeta(connection_id=_secrets.token_hex(8), user_id=user, exchange=exchange,
                               environment=environment, label=label[:60], lifetime=lifetime, created_ms=now,
                               expires_ms=now + seconds * 1000 if seconds else None, key_hint=credential.key_hint,
+                              key_fingerprint=credential.key_fingerprint,
                               permissions=permissions)
         with self._lock:
             vault = self._vault(lifetime)

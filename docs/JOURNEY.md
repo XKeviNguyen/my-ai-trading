@@ -316,7 +316,7 @@ We fixed the audit findings on `fix/six-breaker-remediation`, starting from `mai
 - All 4 High and 19 Medium findings are fixed or documented with evidence.
 - The re-audit found one new High, which is fixed.
 - No Critical or High is open.
-- The suites went from 399 / 41 / 95 to **561 / 55 / 114** passing (Python, extension, desktop), with nothing failed or skipped.
+- The suites went from 399 / 41 / 95 to **563 / 55 / 114** passing (Python, extension, desktop), with nothing failed or skipped.
 - Release readiness still depends on CI running on GitHub and on the owner actions below.
 
 | Area | What changed |
@@ -347,6 +347,12 @@ We fixed the audit findings on `fix/six-breaker-remediation`, starting from `mai
 
 **Our own test tripped our secret scanner.** A test used a variable named `secret_key`, which the scanner's assignment rule matches. We renamed it, and now scan every changed file before proposing a commit.
 
+**An outside reviewer found two more defects after the push.** The Codex reviewer on PR #8 reported two problems:
+- **P1:** a split exit gave the matched part its first-in-first-out P&L and the rest its average-cost P&L. The parts no longer added up to what the exchange reported: 60 instead of 110 in its example. The matched share now uses average cost too, so every split adds up to the reported P&L.
+- **P2:** the connection fallback still trusted the key's last four characters, a limit we had only documented. Two different keys ending the same way counted as one, so private requests could go to the wrong account. Each connection and order now stores a one-way SHA-256 fingerprint of the API key, and the fallback matches on that. The four characters are kept for display only.
+
+Both fixes have tests that fail on the pushed commit. The lesson: a limit that can send requests to the wrong account is a bug, not a footnote.
+
 **Workers hit a usage limit.** All three worktree workers stopped at a session limit at the same time. Their partial work was saved in their worktrees, and we resumed them instead of starting again.
 
 ### Still open
@@ -354,7 +360,6 @@ We fixed the audit findings on `fix/six-breaker-remediation`, starting from `mai
 - **Documented limits:**
   - Stock short sales and break-even closes older than the history cannot be detected.
   - An acknowledged order that the exchange no longer lists or cancels stays open in the journal.
-  - The connection fallback matches on a 4-character key hint.
   - A send already past its final Trading Mode check still goes out.
 - **Follow-ups:**
   - More secret spellings for the scanner.

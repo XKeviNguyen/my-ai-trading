@@ -280,7 +280,7 @@ class TradingService:
         self.journal.journal_insert({"client_order_id": req.client_order_id, "user_id": user,
                                      "connection_id": meta.connection_id, "exchange": meta.exchange,
                                      "environment": str(meta.environment), "state": "SENDING",
-                                     "key_hint": meta.key_hint, "request_json": json.dumps(asdict(req), default=str)})
+                                     "key_hint": meta.key_hint, "key_fingerprint": meta.key_fingerprint, "request_json": json.dumps(asdict(req), default=str)})
         with self._lock:  # last check right before sending: Trading Mode not switched since the preview
             switched = self._mode_gen.get(preview.connection_id, 0) != preview.mode_gen
         if switched:
@@ -401,7 +401,7 @@ class TradingService:
         except (CredentialExpired, CredentialNotFound):
             for meta in self.accounts.connections(user=user):
                 if (meta.exchange == row["exchange"] and str(meta.environment) == row["environment"]
-                        and row.get("key_hint") and meta.key_hint == row["key_hint"]):
+                        and row.get("key_fingerprint") and meta.key_fingerprint == row["key_fingerprint"]):
                     return (*self.accounts.open_connection(meta.connection_id, user),
                             f"checked through your current {meta.exchange} {meta.environment} connection")
             key = f" (the key ending {row['key_hint']})" if row.get("key_hint") else ""

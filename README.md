@@ -371,7 +371,7 @@ erDiagram
 | Stored | Where | Never stored |
 |---|---|---|
 | Settings, strategies, alerts, reports, AI usage, AI cache, order journal | SQLite | API secrets and passphrases |
-| Exchange connection metadata (no secrets) | SQLite | Full API keys (only the last 4 characters) |
+| Exchange connection metadata (no secrets) | SQLite | Full API keys (only the last 4 characters, for display, and a one-way SHA-256 fingerprint, to recognize the same key) |
 | Exchange API secrets (optional, with expiry) | OS credential vault | Any file, browser storage, logs or AI prompts |
 | Live account balances and positions | Memory only, about 15 s | Disk |
 

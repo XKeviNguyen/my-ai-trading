@@ -50,7 +50,7 @@ Multi-timeframe crossings compare values as of the **previous close of the trigg
 
 ## Test suites
 
-CI (`.github/workflows/ci.yml`) runs four jobs on every pull request and on pushes to `main`: `python` (Python 3.11 and 3.14), `extension` (Node 22: type-check, build, `node --test`), `desktop` (Python 3.14, Qt offscreen) and `secret-scan` (full history). **The CI run is the source of truth for test counts.** Last local counts, 2026-10-27 (six-breaker remediation): Python 561 passed, extension 55/55, desktop 114 passed, 0 skipped.
+CI (`.github/workflows/ci.yml`) runs four jobs on every pull request and on pushes to `main`: `python` (Python 3.11 and 3.14), `extension` (Node 22: type-check, build, `node --test`), `desktop` (Python 3.14, Qt offscreen) and `secret-scan` (full history). **The CI run is the source of truth for test counts.** Last local counts, 2026-10-27 (six-breaker remediation): Python 563 passed, extension 55/55, desktop 114 passed, 0 skipped.
 
 Local commands:
 

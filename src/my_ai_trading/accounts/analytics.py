@@ -252,10 +252,12 @@ def closed_trades(fills: Iterable[Fill]) -> TradeHistory:
             if abs(extra) < PNL_TOLERANCE:
                 extra = ZERO
         if closed_qty:
-            reported = f.realized_pnl is not None and not extra
-            gross = f.realized_pnl if reported else pnl
+            reported = f.realized_pnl is not None
+            # When the fill is split, the matched part gets the exchange's own (average-cost) share, so the two
+            # parts add up to the reported P&L. FIFO P&L here would lose or invent money (Codex review, PR #8).
+            gross = (expected if extra else f.realized_pnl) if reported else pnl
             out.append(ClosedTrade(f.symbol, "long" if f.side == "sell" else "short", closed_qty, gross - fees, fees,
-                                   f.time_ms, "exchange_reported" if reported else "derived", excluded))
+                                   f.time_ms, "exchange_reported" if reported and not extra else "derived", excluded))
         if extra:
             out.append(ClosedTrade(f.symbol, "long" if f.side == "sell" else "short", abs(remaining),
                                    extra - fill_fee, fill_fee, f.time_ms, "exchange_reported_entry_unknown",

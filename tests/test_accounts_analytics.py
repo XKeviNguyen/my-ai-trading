@@ -245,3 +245,15 @@ def test_average_cost_realized_pnl_never_creates_entry_unknown_trades_when_histo
         trades = closed_trades(fills).trades
         assert all(t.provenance != "exchange_reported_entry_unknown" for t in trades), case
         assert sum(t.pnl for t in trades) == sum(rps), case  # every realized unit counted once
+
+
+def test_a_split_exit_keeps_the_whole_exchange_reported_pnl():
+    # Codex review on PR #8: a 1-unit long at 150 predates the history. FIFO for the matched part and average cost
+    # for the rest summed to 60 instead of the reported 30 + 80 = 110.
+    fills = [fill(1, "buy", "1", "100", pnl="0", market="usdm_perpetual"),
+             fill(2, "buy", "1", "200", pnl="0", market="usdm_perpetual"),
+             fill(3, "sell", "1", "180", pnl="30", market="usdm_perpetual"),
+             fill(4, "sell", "2", "190", pnl="80", market="usdm_perpetual")]
+    trades = closed_trades(fills).trades
+    assert sum(t.pnl for t in trades) == D("110")
+    assert [t.provenance for t in trades] == ["exchange_reported", "derived", "exchange_reported_entry_unknown"]

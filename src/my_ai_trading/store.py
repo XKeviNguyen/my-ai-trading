@@ -152,7 +152,8 @@ class Store:
         ("acknowledged", "INTEGER NOT NULL DEFAULT 0"),  # 1 once the exchange has ever confirmed the order
         ("verification", "TEXT"),            # last lookup result: confirmed / not_listed / lookup_failed
         ("last_checked_at", "INTEGER"), ("last_seen_at", "INTEGER"), ("last_miss_at", "INTEGER"),
-        ("key_hint", "TEXT"),                # the sending key's hint: a fallback connection must use the same key
+        ("key_hint", "TEXT"),                # the sending key's last 4 characters, for messages only
+        ("key_fingerprint", "TEXT"),         # the sending key's identity: a fallback connection must use the same key
     )}
 
     def _migrate(self) -> None:
@@ -421,10 +422,11 @@ class Store:
         """Fails (IntegrityError) if the client order ID already exists: one preview, at most one order."""
         now = _now()
         self._x("INSERT INTO trading_orders (client_order_id, user_id, connection_id, exchange, environment, "
-                "request_json, state, order_json, message, created_at, updated_at, lookups, key_hint) "
-                "VALUES(?,?,?,?,?,?,?,NULL,NULL,?,?,0,?)",
+                "request_json, state, order_json, message, created_at, updated_at, lookups, key_hint, key_fingerprint) "
+                "VALUES(?,?,?,?,?,?,?,NULL,NULL,?,?,0,?,?)",
                 (row["client_order_id"], row["user_id"], row["connection_id"], row["exchange"], row["environment"],
-                 row["request_json"], row["state"], row.get("created_at", now), now, row.get("key_hint")))
+                 row["request_json"], row["state"], row.get("created_at", now), now, row.get("key_hint"),
+                 row.get("key_fingerprint")))
 
     _TERMINAL = ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "USER_RESOLVED")
     # Exchange order states only move forward. USER_RESOLVED is the user's assertion, so any exchange report wins.

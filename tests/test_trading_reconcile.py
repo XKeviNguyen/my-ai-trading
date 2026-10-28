@@ -450,3 +450,21 @@ def test_n1_resolve_in_the_gap_between_the_journal_row_and_the_send_is_refused(e
     out = trading.submit(p.preview_id, tok, user="local")
     assert refused and "being sent" in refused[0]
     assert out["state"] == "UNKNOWN" and [r["client_order_id"] for r in trading.needs_reconcile(user="local")] == [coid]
+
+
+def test_the_fallback_needs_the_same_key_not_just_the_same_last_four_characters(env):
+    # Codex review on PR #8: two different keys ending in the same 4 characters were treated as the same key.
+    store, wall, accounts, trading, connect, submit = env
+    cid = connect()  # key "k-000000"
+    coid = submit(cid)
+    accounts.disconnect(cid, user="local")
+    accounts.connect(user="local", exchange="sim", environment=Environment.TESTNET, lifetime=Lifetime.SESSION,
+                     label="another account", credential=Credential(Secret("other-000000"), Secret("s-1")))
+    with pytest.raises(TradingRefused, match="key ending 0000"):  # same hint, different key: refused
+        trading.reconcile(coid, user="local")
+    with pytest.raises(TradingRefused):
+        trading.cancel(coid, user="local")
+    accounts.connect(user="local", exchange="sim", environment=Environment.TESTNET, lifetime=Lifetime.SESSION,
+                     label="same key", credential=Credential(Secret("k-000000"), Secret("s-000000")))
+    assert "checked through your current" in trading.reconcile(coid, user="local")["note"]
+    assert "k-000000" not in str(store.journal_row(coid))  # only the hint and a one-way fingerprint are stored
