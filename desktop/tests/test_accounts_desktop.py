@@ -89,7 +89,7 @@ def _sim_adapter_class():
         def query_order(self, cred, symbol, market, *, client_order_id):
             return SimAdapter.book.get(client_order_id)
 
-        def cancel_order(self, cred, symbol, market, *, client_order_id):
+        def cancel_order(self, cred, symbol, market, *, client_order_id, exchange_order_id=None):
             o = SimAdapter.book[client_order_id].model_copy(update={"status": OrderStatus.CANCELED})
             SimAdapter.book[client_order_id] = o
             return o
@@ -311,7 +311,7 @@ def test_trading_mode_needs_consent_then_preview_place_and_journal(win):
     button(ticket, "Refresh orders").click()
     assert wait_until(lambda: any(c.objectName() == "journal-row" for c in view.bodies["orders"].findChildren(Card)))
     rows = [c for c in view.bodies["orders"].findChildren(Card) if c.objectName() == "journal-row"]
-    assert rows[0].title() == "buy 0.1 ETHUSDT limit @ 99.50 · NEW"
+    assert rows[0].title() == "buy 0.1 ETHUSDT limit @ 99.50 · NEW · needs a status check"  # unsettled until final
     assert "Open orders (1)" in texts(view.bodies["orders"])
     # check status, then cancel through a confirmation
     button(rows[0], "Check status").click()

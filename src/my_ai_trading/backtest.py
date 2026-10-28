@@ -3,6 +3,9 @@
 Timing model (the property every test guards):
 - A signal for bar ``t`` is computed only from bars CLOSED at ``as_of = candles[t].close_time_ms + 1``
   (``rules.evaluate`` / ``engine.analyze`` on ``series.up_to(as_of)``). It never sees bar t+1.
+  For speed (PERF-1) each per-bar value is computed once over the whole series with the SAME arithmetic,
+  in the same order, as those functions on the truncated series, so results are identical (guarded by
+  identity tests against ``rules.evaluate`` and ``engine.analyze``) while the cost is linear in bars.
 - Entry fills at the OPEN of bar t+1, worsened by slippage. Bar t+1 counts as held bar 1; the
   time exit fills at the CLOSE of bar ``t + hold_bars`` (worsened by slippage).
 - Optional stop: ``stop_atr_mult`` x Wilder ATR(14) computed from bars closed at t (known at entry),
@@ -34,14 +37,19 @@ Fail-closed data rules:
 from __future__ import annotations
 
 import statistics
+import threading
+from bisect import bisect_left
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from math import isfinite, prod
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Iterator, Literal, Mapping, Sequence
 
-from .domain import CandleSeries
-from .engine import CONTRACTION_BASE, CONTRACTION_RECENT, PIVOT_LOOKBACK, RECLAIM_PERIODS, analyze, utc_iso
-from .indicators import atr_wilder
-from .rules import StrategyRule, evaluate
+from .domain import Candle, CandleSeries
+from .engine import (BREAKOUT_VOLUME_RATIO, CONTRACTION_BASE, CONTRACTION_RATIO, CONTRACTION_RECENT, MIN_BARS,
+                     PIVOT_LOOKBACK, RECLAIM_PERIODS, TREND_SLOPE_BARS, UNUSUAL_VOLUME_RATIO, trend_state, utc_iso)
+from .indicators import (bollinger, ema_series, prior_high, prior_low, sma, sma_series, true_ranges,
+                         volume_ratio)
+from .rules import AllOf, AnyOf, MetricRef, Not, StrategyRule, Trend
 
 BACKTEST_VERSION = "backtest/0.1.0"
 LABEL = "HYPOTHETICAL — research backtest, not live or audited performance"
@@ -107,24 +115,335 @@ class BacktestConfig:
 
 # ---------- signals ----------
 
-def _event_state(series: CandleSeries, event_type: str, as_of: int) -> str:
-    rep = analyze(series.up_to(as_of), as_of_ms=as_of)
-    if rep["status"] != "OK":
-        return INSUFFICIENT_DATA
-    n = rep["data_quality"]["contiguous_bars"]
-    need = {"FAILED_BREAKOUT": PIVOT_LOOKBACK + 2, "FAILED_BREAKDOWN": PIVOT_LOOKBACK + 2,
-            "VOLATILITY_CONTRACTION": CONTRACTION_RECENT + CONTRACTION_BASE + 1}.get(event_type, 0)
+MAX_CONCURRENT_BACKTESTS = 2
+_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_BACKTESTS)
+
+
+class BacktestBusyError(RuntimeError):
+    """Too many backtests are already running in this process. Not a validation error: retry later
+    (the API maps it to HTTP 429). Fails fast instead of queueing, so bursts cannot starve the server."""
+
+
+@contextmanager
+def backtest_slot() -> Iterator[None]:
+    """Hold one of ``MAX_CONCURRENT_BACKTESTS`` process-wide slots, or raise ``BacktestBusyError`` now."""
+    if not _SLOTS.acquire(blocking=False):
+        raise BacktestBusyError(f"{MAX_CONCURRENT_BACKTESTS} backtests already running; retry shortly")
+    try:
+        yield
+    finally:
+        _SLOTS.release()
+
+
+class _Prefix:
+    """Per-bar values of one series. Entry ``i`` is computed from the contiguous run of bars ending at bar i
+    (``series.up_to(close_i + 1).contiguous_tail()``), with the same indicator functions or the same
+    recurrences in the same order, so every value equals the one ``rules`` / ``engine`` compute on the
+    truncated series. Recursive indicators (EMA, Wilder ATR/RSI, ADX, MACD) run once per contiguous
+    segment; windowed ones call the indicator on the bounded window it reads."""
+
+    def __init__(self, series: CandleSeries):
+        self.series = series
+        self.candles = series.candles
+        self.closes = [c.close for c in self.candles]
+        self.close_times = [c.close_time_ms for c in self.candles]
+        tf, seg, start = series.timeframe, [], 0
+        for i, c in enumerate(self.candles):  # same adjacency test as CandleSeries gap detection
+            if i and c.open_time_ms != tf.next_open_ms(self.candles[i - 1].open_time_ms):
+                start = i
+            seg.append(start)
+        self.seg = seg
+        starts = sorted(set(seg))
+        self.segments = list(zip(starts, starts[1:] + [len(seg)]))  # [start, end) of each contiguous run
+        self.seg_end = dict(self.segments)
+        self._arrays: dict[tuple[str, int | None], list[Any]] = {}
+        self._trend: dict[int, str] = {}
+
+    def view(self, as_of: int) -> int | None:
+        """Index of the newest bar closed at ``as_of``, or None when that view is empty or stale."""
+        j = bisect_left(self.close_times, as_of) - 1
+        if j < 0:
+            return None
+        last = CandleSeries(self.series.instrument, self.series.timeframe, (self.candles[j],))
+        return None if last.is_stale(as_of) else j  # staleness depends only on the newest bar
+
+    def _windowed(self, fn: Any, width: int, *, closes: bool) -> list[Any]:
+        src = self.closes if closes else self.candles
+        return [fn(src[max(self.seg[i], i - width + 1):i + 1]) for i in range(len(src))]
+
+    def _per_segment(self, fn: Any) -> list[Any]:
+        out: list[Any] = [None] * len(self.candles)
+        for s, e in self.segments:
+            out[s:e] = fn(self.candles[s:e], self.closes[s:e])
+        return out
+
+    def array(self, name: str, n: int | None) -> list[Any]:
+        key = (name, n)
+        if key not in self._arrays:
+            self._arrays[key] = self._build(name, n)
+        return self._arrays[key]
+
+    def _build(self, name: str, n: int | None) -> list[Any]:
+        if name in ("close", "open", "high", "low", "volume"):
+            return [getattr(c, name) for c in self.candles]
+        assert n is not None or name in ("macd_line", "macd_histogram")
+        match name:
+            case "sma":
+                return self._windowed(lambda w: sma(w, n), n, closes=True)
+            case "volume_ratio":
+                return self._windowed(lambda w: volume_ratio(w, n), n + 1, closes=False)
+            case "prior_high":
+                return self._windowed(lambda w: prior_high(w, n), n + 1, closes=False)
+            case "prior_low":
+                return self._windowed(lambda w: prior_low(w, n), n + 1, closes=False)
+            case "bollinger_percent_b":
+                def pb(w: list[float]) -> float | None:
+                    b = bollinger(w, n)
+                    return b and b["percent_b"]
+                return self._windowed(pb, n, closes=True)
+            case "ema":
+                return self._per_segment(lambda _c, cl: ema_series(cl, n))
+            case "atr_wilder":
+                return self._per_segment(lambda cs, _cl: _atr_wilder_series(cs, n))
+            case "rsi_wilder":
+                return self._per_segment(lambda _c, cl: _rsi_wilder_series(cl, n))
+            case "adx":
+                return self._per_segment(lambda cs, _cl: _adx_series(cs, n))
+            case "macd_line" | "macd_histogram":
+                return self._per_segment(lambda _c, cl: _macd_series(cl, name == "macd_histogram"))
+        raise ValueError(f"unsupported metric {name!r}")
+
+    def trend(self, j: int) -> str:
+        if j not in self._trend:  # trend_state reads SMA50, SMA200 and SMA50 TREND_SLOPE_BARS bars ago
+            w = self.closes[max(self.seg[j], j - (200 + TREND_SLOPE_BARS) + 1):j + 1]
+            self._trend[j] = trend_state(w, {50: sma(w, 50), 200: sma(w, 200)})["state"]
+        return self._trend[j]
+
+
+def _atr_wilder_series(cs: Sequence[Candle], n: int) -> list[float | None]:
+    """``indicators.atr_wilder`` of every prefix of ``cs`` (same seed and recurrence)."""
+    out: list[float | None] = [None] * len(cs)
+    tr = true_ranges(cs)
+    if len(tr) >= n:
+        v = sum(tr[:n]) / n
+        out[n] = v
+        for k in range(n + 1, len(cs)):
+            v = (v * (n - 1) + tr[k - 1]) / n
+            out[k] = v
+    return out
+
+
+def _rsi_wilder_series(cl: Sequence[float], n: int) -> list[float | None]:
+    """``indicators.rsi_wilder`` of every prefix of ``cl`` (same seed, recurrence and final formula)."""
+    out: list[float | None] = [None] * len(cl)
+    deltas = [b - a for a, b in zip(cl, cl[1:])]
+    if len(deltas) < n:
+        return out
+
+    def rsi(gain: float, loss: float) -> float:
+        if loss == 0:
+            return 100.0 if gain > 0 else 50.0
+        return 100 - 100 / (1 + gain / loss)
+    gain = sum(max(d, 0.0) for d in deltas[:n]) / n
+    loss = sum(max(-d, 0.0) for d in deltas[:n]) / n
+    out[n] = rsi(gain, loss)
+    for k in range(n + 1, len(cl)):
+        d = deltas[k - 1]
+        gain = (gain * (n - 1) + max(d, 0.0)) / n
+        loss = (loss * (n - 1) + max(-d, 0.0)) / n
+        out[k] = rsi(gain, loss)
+    return out
+
+
+def _adx_series(cs: Sequence[Candle], n: int) -> list[float | None]:
+    """``indicators.adx(...)["adx"]`` of every prefix of ``cs`` (same Wilder sums and smoothing)."""
+    out: list[float | None] = [None] * len(cs)
+    if len(cs) < 2 * n:
+        return out
+    tr = true_ranges(cs)
+    pdm: list[float] = []
+    mdm: list[float] = []
+    for p, c in zip(cs, cs[1:]):
+        up, down = c.high - p.high, p.low - c.low
+        pdm.append(up if up > down and up > 0 else 0.0)
+        mdm.append(down if down > up and down > 0 else 0.0)
+
+    def di(dm_s: float, tr_s: float) -> float:
+        return 100 * dm_s / tr_s if tr_s > 0 else 0.0
+
+    tr_s, p_s, m_s = sum(tr[:n]), sum(pdm[:n]), sum(mdm[:n])
+    dxs: list[float] = []  # dxs[q] belongs to true-range index n - 1 + q
+    for i in range(n - 1, len(tr)):
+        if i >= n:
+            tr_s = tr_s - tr_s / n + tr[i]
+            p_s = p_s - p_s / n + pdm[i]
+            m_s = m_s - m_s / n + mdm[i]
+        plus, minus = di(p_s, tr_s), di(m_s, tr_s)
+        total = plus + minus
+        dxs.append(100 * abs(plus - minus) / total if total > 0 else 0.0)
+    v = sum(dxs[:n]) / n
+    out[2 * n - 1] = v
+    for k in range(2 * n, len(cs)):
+        v = (v * (n - 1) + dxs[k - n]) / n
+        out[k] = v
+    return out
+
+
+def _macd_series(cl: Sequence[float], histogram: bool, fast: int = 12, slow: int = 26,
+                 signal: int = 9) -> list[float | None]:
+    """``indicators.macd`` (default periods) line or histogram of every prefix of ``cl``."""
+    out: list[float | None] = [None] * len(cl)
+    if len(cl) < slow + signal - 1:
+        return out
+    fs, ss = ema_series(cl, fast), ema_series(cl, slow)
+    line = [f - s for f, s in zip(fs[slow - 1:], ss[slow - 1:])]
+    sig = ema_series(line, signal)
+    for k in range(slow + signal - 2, len(cl)):
+        q = k - (slow - 1)
+        out[k] = line[q] - sig[q] if histogram else line[q]
+    return out
+
+
+class _FastCtx:
+    """Mirror of ``rules._Ctx``: one evaluation instant, with the previous-trigger-close context for crossings."""
+
+    def __init__(self, pre: Mapping[str, _Prefix], as_of: int, trigger: str):
+        self.pre, self.as_of, self.trigger = pre, as_of, trigger
+        self._views: dict[str, int | None] = {}
+        self._previous: _FastCtx | None = None
+
+    def view(self, tf: str) -> int | None:
+        if tf not in self._views:
+            self._views[tf] = self.pre[tf].view(self.as_of)
+        return self._views[tf]
+
+    def previous(self) -> "_FastCtx | None":
+        if self._previous is None:
+            j, p = self.view(self.trigger), self.pre[self.trigger]
+            if j is None or j - p.seg[j] + 1 < 2:
+                return None
+            self._previous = _FastCtx(self.pre, p.candles[j].open_time_ms, self.trigger)
+        return self._previous
+
+
+def _fast_value(ref: MetricRef | float, ctx: _FastCtx, *, previous: bool = False) -> float | None:
+    if not isinstance(ref, MetricRef):
+        return float(ref)
+    if previous:
+        prev = ctx.previous()
+        if prev is None:
+            return None
+        ctx = prev
+    j = ctx.view(ref.timeframe)
+    if j is None:
+        return None
+    p = ctx.pre[ref.timeframe]
+    if ref.bar == "previous_closed":
+        if j - 1 < p.seg[j]:
+            return None
+        j -= 1
+    v = p.array(ref.name, ref.period)[j]
+    return None if v is None else float(v)
+
+
+def _fast_eval(node: Any, ctx: _FastCtx) -> bool | None:
+    """Mirror of ``rules._eval`` (three-valued logic) without the human-readable leaves."""
+    if isinstance(node, AllOf):
+        outcomes = [_fast_eval(i, ctx) for i in node.items]
+        return False if False in outcomes else None if None in outcomes else True
+    if isinstance(node, AnyOf):
+        outcomes = [_fast_eval(i, ctx) for i in node.items]
+        return True if True in outcomes else None if None in outcomes else False
+    if isinstance(node, Not):
+        r = _fast_eval(node.item, ctx)
+        return None if r is None else not r
+    if isinstance(node, Trend):
+        j = ctx.view(node.timeframe)
+        state = "UNKNOWN" if j is None else ctx.pre[node.timeframe].trend(j)
+        return None if state == "UNKNOWN" else state == node.state
+    left, right = _fast_value(node.left, ctx), _fast_value(node.right, ctx)
+    if left is None or right is None:
+        return None
+    if node.op in (">", ">=", "<", "<="):
+        return {">": left > right, ">=": left >= right, "<": left < right, "<=": left <= right}[node.op]
+    pl, pr = _fast_value(node.left, ctx, previous=True), _fast_value(node.right, ctx, previous=True)
+    if pl is None or pr is None:
+        return None
+    if node.op == "crosses_above":
+        return pl <= pr and left > right
+    return pl >= pr and left < right
+
+
+def _rule_signals(rule: StrategyRule, by_tf: Mapping[str, CandleSeries], series: CandleSeries) -> list[str]:
+    pre = {tf: _Prefix(by_tf[tf]) for tf in rule.timeframes()}
+    out = []
+    for c in series.candles:
+        r = _fast_eval(rule.condition, _FastCtx(pre, c.close_time_ms + 1, rule.trigger_timeframe))
+        out.append(MATCH if r is True else NO_MATCH if r is False else INSUFFICIENT_DATA)
+    return out
+
+
+def _event_need(event_type: str) -> int:
     if event_type.startswith("SMA"):
-        need = int(event_type[3:].split("_")[0]) + 1  # needs the SMA on the previous bar too
-    if n < need:
-        return INSUFFICIENT_DATA
-    return MATCH if any(e["type"] == event_type for e in rep["events"]) else NO_MATCH
+        return int(event_type[3:].split("_")[0]) + 1  # needs the SMA on the previous bar too
+    return {"FAILED_BREAKOUT": PIVOT_LOOKBACK + 2, "FAILED_BREAKDOWN": PIVOT_LOOKBACK + 2,
+            "VOLATILITY_CONTRACTION": CONTRACTION_RECENT + CONTRACTION_BASE + 1}.get(event_type, 0)
+
+
+def _event_signals(series: CandleSeries, event_type: str) -> list[str]:
+    """Per bar: would ``engine.analyze(series.up_to(close + 1))`` report status OK with at least the bars this
+    event needs, and list ``event_type``? Mirrors ``engine._events`` on per-bar values computed once."""
+    p = _Prefix(series)
+    candles, need = p.candles, max(_event_need(event_type), MIN_BARS)
+    vr = p.array("volume_ratio", PIVOT_LOOKBACK)
+    ph, pl = p.array("prior_high", PIVOT_LOOKBACK), p.array("prior_low", PIVOT_LOOKBACK)
+    sma_n = int(event_type[3:].split("_")[0]) if event_type.startswith("SMA") else None
+    seg_sma: dict[int, list[float | None]] = {}
+    seg_tr: dict[int, list[float]] = {}
+    out = []
+    for i, c in enumerate(candles):
+        s = p.seg[i]
+        if p.view(c.close_time_ms + 1) is None or i - s + 1 < need:
+            out.append(INSUFFICIENT_DATA)  # stale, too few bars for status OK, or for this event
+            continue
+        prev, k = candles[i - 1], i - s
+        hit = False
+        if event_type == "BREAKOUT":
+            hit = ph[i] is not None and vr[i] is not None and c.close > ph[i] and vr[i] >= BREAKOUT_VOLUME_RATIO
+        elif event_type == "BREAKDOWN":
+            hit = pl[i] is not None and vr[i] is not None and c.close < pl[i] and vr[i] >= BREAKOUT_VOLUME_RATIO
+        elif event_type == "FAILED_BREAKOUT":  # need >= PIVOT_LOOKBACK + 2, so bar i - 1 is in this segment
+            hit = ph[i - 1] is not None and prev.close > ph[i - 1] and c.close < ph[i - 1]
+        elif event_type == "FAILED_BREAKDOWN":
+            hit = pl[i - 1] is not None and prev.close < pl[i - 1] and c.close > pl[i - 1]
+        elif event_type == "UNUSUAL_VOLUME":
+            hit = vr[i] is not None and vr[i] >= UNUSUAL_VOLUME_RATIO
+        elif event_type == "VOLATILITY_CONTRACTION":
+            if s not in seg_tr:
+                seg_tr[s] = true_ranges(candles[s:p.seg_end[s]])
+            tr = seg_tr[s]  # true ranges of the segment; the tail ending at i has k of them
+            recent = sum(tr[k - CONTRACTION_RECENT:k]) / CONTRACTION_RECENT
+            base = sum(tr[k - CONTRACTION_RECENT - CONTRACTION_BASE:k - CONTRACTION_RECENT]) / CONTRACTION_BASE
+            hit = base > 0 and recent / base < CONTRACTION_RATIO
+        else:  # SMA{n}_RECLAIM / SMA{n}_LOSS: rolling SMA over the segment, as engine.sma_series does
+            assert sma_n is not None
+            if s not in seg_sma:
+                seg_sma[s] = sma_series(p.closes[s:p.seg_end[s]], sma_n)
+            sm = seg_sma[s]
+            if sm[k] is not None and sm[k - 1] is not None:
+                if prev.close < sm[k - 1] and c.close > sm[k]:
+                    hit = event_type.endswith("_RECLAIM")
+                elif prev.close > sm[k - 1] and c.close < sm[k]:
+                    hit = event_type.endswith("_LOSS")
+        out.append(MATCH if hit else NO_MATCH)
+    return out
 
 
 def compute_signals(source: Source, series: CandleSeries, *,
                     other_series: Mapping[str, CandleSeries] | None = None) -> list[str]:
     """One state (MATCH / NO_MATCH / INSUFFICIENT_DATA) per bar of ``series``, each computed from
-    bars closed at that bar's close only. ``other_series`` supplies extra rule timeframes."""
+    bars closed at that bar's close only. ``other_series`` supplies extra rule timeframes.
+    Identical to ``rules.evaluate(...)["result"]`` / ``engine.analyze`` per bar, in linear time."""
     if isinstance(source, StrategyRule):
         if source.trigger_timeframe != series.timeframe.code:
             raise ValueError("series timeframe must equal the rule's trigger_timeframe")
@@ -132,12 +451,11 @@ def compute_signals(source: Source, series: CandleSeries, *,
         missing = source.timeframes() - set(by_tf)
         if missing:
             raise ValueError(f"missing series for timeframe(s): {sorted(missing)}")
-        return [evaluate(source, by_tf.__getitem__, as_of_ms=c.close_time_ms + 1)["result"]
-                for c in series.candles]
+        return _rule_signals(source, by_tf, series)
     if isinstance(source, str):
         if source not in ENGINE_EVENT_TYPES:
             raise ValueError(f"unknown engine event type {source!r}")
-        return [_event_state(series, source, c.close_time_ms + 1) for c in series.candles]
+        return _event_signals(series, source)
     raise TypeError("source must be a StrategyRule or an engine event type string")
 
 
@@ -173,6 +491,8 @@ def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfi
 
     def adjacent(j: int) -> bool:  # bar j+1 exists in the window and directly follows bar j
         return j + 1 < end and candles[j + 1].open_time_ms == series.timeframe.next_open_ms(candles[j].open_time_ms)
+
+    atr_at: list[float | None] | None = None  # Wilder ATR of bars closed at each bar, built on first use
 
     counts = {"match": 0, "no_match": 0, "insufficient_data": 0, "ignored_in_position": 0,
               "skipped_gap_before_entry": 0, "skipped_no_atr": 0, "no_next_bar": 0}
@@ -232,7 +552,9 @@ def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfi
         else:
             atr = None
             if cfg.stop_atr_mult is not None:
-                atr = atr_wilder(series.up_to(c.close_time_ms + 1).contiguous_tail(), ATR_PERIOD)
+                if atr_at is None:
+                    atr_at = _Prefix(series).array("atr_wilder", ATR_PERIOD)
+                atr = atr_at[j]
                 if atr is None:
                     counts["skipped_no_atr"] += 1
                     continue
@@ -301,9 +623,11 @@ def _header(source: Source, series: CandleSeries, config: BacktestConfig) -> dic
 def run_backtest(source: Source, series: CandleSeries, config: BacktestConfig, *,
                  other_series: Mapping[str, CandleSeries] | None = None,
                  signals: Sequence[str] | None = None) -> dict[str, Any]:
-    """Backtest a rule or engine event over ``series``. Precomputed ``signals`` may be passed."""
-    sig = list(signals) if signals is not None else compute_signals(source, series, other_series=other_series)
-    return {**_header(source, series, config), **simulate(series, sig, config)}
+    """Backtest a rule or engine event over ``series``. Precomputed ``signals`` may be passed.
+    Raises ``BacktestBusyError`` when ``MAX_CONCURRENT_BACKTESTS`` are already running."""
+    with backtest_slot():
+        sig = list(signals) if signals is not None else compute_signals(source, series, other_series=other_series)
+        return {**_header(source, series, config), **simulate(series, sig, config)}
 
 
 def walk_forward(source: Source, series: CandleSeries, config: BacktestConfig, *, n_folds: int = 4,
@@ -312,7 +636,15 @@ def walk_forward(source: Source, series: CandleSeries, config: BacktestConfig, *
     """Expanding-window walk-forward. Bars split into ``n_folds + 1`` chronological segments; fold i
     tests segment i after skipping an embargo (>= hold_bars) right after its in-sample end. Rules are
     not fitted here, so in-sample data is unused and folds report per-period metrics and stability.
-    Trades must lie entirely inside their fold's test window."""
+    Trades must lie entirely inside their fold's test window. Raises ``BacktestBusyError`` like run_backtest."""
+    with backtest_slot():
+        return _walk_forward(source, series, config, n_folds=n_folds, embargo_bars=embargo_bars,
+                             other_series=other_series, signals=signals)
+
+
+def _walk_forward(source: Source, series: CandleSeries, config: BacktestConfig, *, n_folds: int,
+                  embargo_bars: int | None, other_series: Mapping[str, CandleSeries] | None,
+                  signals: Sequence[str] | None) -> dict[str, Any]:
     embargo = config.hold_bars if embargo_bars is None else embargo_bars
     if isinstance(n_folds, bool) or not isinstance(n_folds, int) or n_folds < 1:
         raise ValueError("n_folds must be an integer >= 1")

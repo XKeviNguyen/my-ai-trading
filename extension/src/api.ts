@@ -1,7 +1,7 @@
 // Typed client for the local My AI Trading API. Pure logic: no DOM, no chrome.* — fetch is injected.
 // The base URL is a constant; the bearer token is sent only to it and never appears in error text.
 
-import { isMarket, isValidSymbol, type Market } from "./symbol.js";
+import { isAccountMarket, isMarket, isValidAccountSymbol, isValidSymbol, type Market } from "./symbol.js";
 import type {
   AlertsResponse,
   AnalysisResponse,
@@ -52,6 +52,7 @@ export type ErrorKind =
   | "exchange_auth" // 424 (the exchange rejected the API key)
   | "not_supported" // 501
   | "outcome_unknown" // 504 (an exchange request may or may not have taken effect)
+  | "changed_elsewhere" // 412 (settings changed since they were loaded; nothing was saved)
   | "timeout"
   | "http"; // anything else
 
@@ -100,6 +101,8 @@ export function userMessage(kind: ErrorKind, detail: string, retryAfterS: number
       return "Not supported" + (detail ? `: ${detail}` : ".");
     case "outcome_unknown":
       return "The exchange did not confirm the result. Check the order status; do not resend." + (detail ? ` (${detail})` : "");
+    case "changed_elsewhere":
+      return "Settings changed elsewhere (another side panel, window or the desktop app) since they were loaded, so nothing was saved and nothing was overwritten. The latest settings were reloaded: review them and apply your change again.";
     case "timeout":
       return "The local engine did not answer in time.";
     default:
@@ -123,6 +126,22 @@ interface RequestOptions {
   timeoutMs?: number;
   /** Return the raw response body as text instead of parsing JSON. */
   text?: boolean;
+  /** Send `If-Match` (settings compare-and-set). */
+  ifMatch?: string | null;
+}
+
+/** A parsed body plus the response's version tag (ETag), for compare-and-set saves. */
+export interface Versioned<T> {
+  data: T;
+  etag: string | null;
+}
+
+// An entity tag as the engine writes it ("<16 hex>"), or any RFC 9110 opaque tag; never a header injection.
+const ETAG_RE = /^(?:W\/)?"[\x21\x23-\x7e]{1,128}"$/;
+
+function readEtag(res: Response): string | null {
+  const v = res.headers.get("ETag")?.trim();
+  return v && ETAG_RE.test(v) ? v : null;
 }
 
 function scrub(text: string, token: string | null | undefined): string {
@@ -174,6 +193,8 @@ function kindForStatus(status: number): ErrorKind {
       return "not_found";
     case 409:
       return "conflict";
+    case 412:
+      return "changed_elsewhere";
     case 421:
       return "engine_unavailable";
     case 422:
@@ -193,6 +214,14 @@ function kindForStatus(status: number): ErrorKind {
 function requireSymbol(symbol: string, market: Market): void {
   if (!isValidSymbol(symbol)) throw new ApiError("validation", 0, "symbol must match ^[A-Z0-9]{3,20}$");
   if (!isMarket(market)) throw new ApiError("validation", 0, "market must be usdm_perpetual or spot");
+}
+
+/** Account and trading routes use the engine's account rule (stocks such as BRK.B), not the market-data rule. */
+function requireAccountSymbol(symbol: string, market: string): void {
+  if (!isValidAccountSymbol(symbol)) {
+    throw new ApiError("validation", 0, "symbol must be 1-30 capital letters, digits or dots (e.g. BTCUSDT, BRK.B)");
+  }
+  if (!isAccountMarket(market)) throw new ApiError("validation", 0, "market must be spot, usdm_perpetual or stock");
 }
 
 export class ApiClient {
@@ -218,6 +247,11 @@ export class ApiClient {
   }
 
   async request<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, opts: RequestOptions = {}): Promise<T> {
+    return (await this.requestVersioned<T>(method, path, opts)).data;
+  }
+
+  /** Like `request`, and also returns the response's ETag. */
+  async requestVersioned<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, opts: RequestOptions = {}): Promise<Versioned<T>> {
     const url = ApiClient.buildUrl(path, opts.query);
     const headers: Record<string, string> = { Accept: "application/json" };
     let token: string | null | undefined = null;
@@ -226,6 +260,10 @@ export class ApiClient {
       if (!token) throw new ApiError("unauthorized", 0, "no API token saved");
       if (/[\r\n]/.test(token)) throw new ApiError("unauthorized", 0, "saved token is malformed");
       headers["Authorization"] = `Bearer ${token}`;
+    }
+    if (opts.ifMatch !== undefined && opts.ifMatch !== null) {
+      if (!ETAG_RE.test(opts.ifMatch)) throw new ApiError("validation", 0, "invalid settings version tag");
+      headers["If-Match"] = opts.ifMatch;
     }
     let body: BodyInit | undefined;
     if (opts.form) {
@@ -264,7 +302,7 @@ export class ApiClient {
     } catch {
       parsed = null;
     }
-    if (opts.text && res.ok) return raw as unknown as T; // e.g. a Markdown export
+    if (opts.text && res.ok) return { data: raw as unknown as T, etag: readEtag(res) }; // e.g. a Markdown export
     if (!res.ok) {
       const kind = kindForStatus(res.status);
       const retry =
@@ -276,7 +314,7 @@ export class ApiClient {
     if (parsed === null || typeof parsed !== "object") {
       throw new ApiError("http", res.status, "response was not a JSON object");
     }
-    return parsed as T;
+    return { data: parsed as T, etag: readEtag(res) };
   }
 
   // ---- endpoints ----
@@ -289,8 +327,16 @@ export class ApiClient {
   async getSettings(): Promise<UserSettings> {
     return this.request("GET", "/api/v1/settings");
   }
-  async putSettings(settings: UserSettings): Promise<UserSettings> {
-    return this.request("PUT", "/api/v1/settings", { json: settings });
+  /** Settings plus their version tag. Send the tag back with `putSettingsVersioned` so a save never overwrites
+   * changes made elsewhere in between: the engine then answers 412 (kind "changed_elsewhere") and saves nothing. */
+  async getSettingsVersioned(): Promise<Versioned<UserSettings>> {
+    return this.requestVersioned("GET", "/api/v1/settings");
+  }
+  async putSettings(settings: UserSettings, ifMatch: string | null = null): Promise<UserSettings> {
+    return (await this.putSettingsVersioned(settings, ifMatch)).data;
+  }
+  async putSettingsVersioned(settings: UserSettings, ifMatch: string | null): Promise<Versioned<UserSettings>> {
+    return this.requestVersioned("PUT", "/api/v1/settings", { json: settings, ifMatch });
   }
   async analysis(symbol: string, market: Market, analysisTimeframe?: string): Promise<AnalysisResponse> {
     requireSymbol(symbol, market);
@@ -397,6 +443,7 @@ export class ApiClient {
     return this.request("GET", "/api/v1/accounts/portfolio", { query: { environment } });
   }
   async performance(id: string, symbol: string, market: string): Promise<PerformanceResponse> {
+    requireAccountSymbol(symbol, market);
     return this.request("GET", `/api/v1/accounts/connections/${requireId(id)}/performance`, { query: { symbol, market } });
   }
 
@@ -408,6 +455,7 @@ export class ApiClient {
     return this.request("PUT", "/api/v1/trading/mode", { json: { connection_id: requireId(id), enabled, consent } });
   }
   async previewOrder(id: string, draft: OrderDraft): Promise<TradePreview> {
+    requireAccountSymbol(draft.symbol, draft.market);
     return this.request("POST", "/api/v1/trading/preview", { json: { connection_id: requireId(id), draft } });
   }
   async submitOrder(previewId: string, confirmToken: string): Promise<TradeResult> {
@@ -421,6 +469,10 @@ export class ApiClient {
   }
   async cancelOrder(clientOrderId: string): Promise<TradeResult> {
     return this.request("POST", `/api/v1/trading/orders/${requireOrderId(clientOrderId)}/cancel`, { json: { confirm: true } });
+  }
+  /** Stop tracking a never-acknowledged order after the user checked the exchange's order history. */
+  async resolveOrder(clientOrderId: string): Promise<TradeResult> {
+    return this.request("POST", `/api/v1/trading/orders/${requireOrderId(clientOrderId)}/resolve`, { json: { confirm: true } });
   }
 }
 

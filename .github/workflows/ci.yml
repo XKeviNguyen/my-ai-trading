@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
 
+# Every action is pinned to a full commit SHA of a released tag (comment = tag).
 jobs:
   python:
     runs-on: ubuntu-latest
@@ -25,5 +26,65 @@ jobs:
       - name: Install (no AI extra; tests are offline)
         run: python -m pip install -e '.[api,test,vision,ml,accounts]'
       - name: Tests
-        run: python -m pytest
-      # Secret scanning in CI needs a full-history scanner (e.g. Gitleaks) — owner decision, see docs/SECURITY.md.
+        run: python -m pytest -rs
+
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install from the lockfile
+        run: npm ci --ignore-scripts
+      - name: Type-check, build and test
+        run: npm test
+
+  desktop:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MY_AI_TRADING_REPO_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+      # Direct system dependencies of the PySide6-Essentials Qt libraries and the offscreen
+      # platform plugin (from `readelf -d` on the 6.12 wheel). Offscreen needs no X server.
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - name: Install core and desktop packages
+        run: python -m pip install -e '.[api,test]' -e './desktop[test]'
+      - name: Check that the Qt offscreen plugin loads its libraries
+        run: |
+          plugin="$(python -c 'import pathlib, PySide6; print(pathlib.Path(PySide6.__file__).parent / "Qt/plugins/platforms/libqoffscreen.so")')"
+          if ldd "$plugin" | grep 'not found'; then exit 1; fi
+      - name: Desktop tests (offscreen)
+        working-directory: desktop
+        run: python -m pytest -rs
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # full history: every commit reachable from HEAD is scanned
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+      # The repository's own dependency-free scanner; it never prints secret values.
+      # A dedicated scanner such as Gitleaks is an owner decision (docs/SECURITY.md).
+      - name: Scan full history
+        run: python tools/secret_guard.py --history

@@ -79,6 +79,13 @@ def trading_router(trading: TradingService, dependencies: list[Any]) -> APIRoute
     def reconcile(coid: str = PathParam(pattern=COID)) -> dict[str, Any]:
         return refused(trading.reconcile, coid, user=LOCAL_USER)
 
+    @r.post("/orders/{coid}/resolve")
+    def resolve(body: CancelRequest, coid: str = PathParam(pattern=COID)) -> dict[str, Any]:
+        """For an order the exchange never acknowledged: the user checked the exchange and stops tracking it."""
+        if not body.confirm:
+            raise HTTPException(409, "marking an order resolved needs explicit confirmation")
+        return refused(trading.resolve, coid, user=LOCAL_USER)
+
     @r.post("/orders/{coid}/cancel")
     def cancel(body: CancelRequest, coid: str = PathParam(pattern=COID)) -> dict[str, Any]:
         if not body.confirm:

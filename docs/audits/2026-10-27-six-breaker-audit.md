@@ -229,3 +229,87 @@ Real exchange testnets (no authorized credentials); live LLM calls (no key/budge
 
 - Breakers could not save their reproduction scripts (their read-only mode forbade creating files, so all ran inline). The lead re-ran 8 reproductions with saved scripts: FLOW-1, FLOW-2, SEC-1, SEC-2, DATA-1, DATA-2, ENV-6, PERF-2, plus the DOC-1, DOC-2 and SIMP-1 spot checks.
 - **Incident:** one environment-breaker run accidentally constructed the default app and sent a signed request with a **dummy, non-secret test key** to the official Binance testnet; Binance rejected it (HTTP 424 at the app layer). No real credential was involved. Later runs used fakes and an unroutable socket. Lesson: audit harnesses must always inject fake adapters; consider a test-mode flag that refuses real exchange hosts.
+
+## 11. Remediation tracking (2026-10-27/28)
+
+**Branch:** `fix/six-breaker-remediation`, from `main` at `9488a2e` (the audit merge). **Fix commit:** the owner commits the branch; this table refers to that branch commit. **Process:** the lead fixed trading, the compiler and evaluator, analytics, the request guard, the store and credentials. Three implementers worked in separate git worktrees with exclusive file ownership (performance; extension and desktop; CI and docs), and the lead integrated their owned files only. Six read-only breakers then re-audited the integrated tree. Their new findings were fixed, and two read-only verifiers retested those fixes. Every lead regression test was first run against the earlier code to confirm it fails there. The two exceptions are noted in the table.
+
+**Final gates (local, 2026-10-28, after the Codex review fixes):** Python 563 passed, extension 55/55, desktop 114 passed, 0 failed, 0 skipped. `tools/export_openapi.py --check` reports the spec up to date. `tools/secret_guard.py --history` passes (305 file revisions). The 91 changed or untracked files have no secret findings. There is no new Critical or High.
+
+### Original findings
+
+| ID | Sev | Fix | Regression test | Re-audit verdict |
+|---|---|---|---|---|
+| FLOW-1 | High | No automatic NOT_FOUND; `verification` kept apart from `state` | `test_trading_reconcile.py::test_flow1_*` | FIXED |
+| FLOW-2 | High | Exchange states never downgraded; spaced misses, reset when the order is seen | `test_flow2_*` | FIXED |
+| DATA-1 | High | Word-bounded timeframes, whole-clause consumption, negation lexicon, N-day check, "1 M" | `test_rules_compiler.py::test_compiler_never_changes_the_meaning_of_a_clause`, `test_reaudit_compiler_and_rule_value_cases` | FIXED (after re-audit: "1 M", trend words) |
+| DATA-2 | High | Entry-unknown closes; split decided by average-cost realized P&L | `test_accounts_analytics.py::test_a_close_whose_entry_*`, `test_realized_pnl_beyond_*`, `test_average_cost_*` (400 random cases) | FIXED. Limit: a break-even close older than the history is undetectable |
+| SEC-1 | Med | Byte-counted, spooled body; chunked refused; duplicate headers refused | `test_request_guard.py` (raw ASGI and real uvicorn) | FIXED |
+| SEC-2 | Med | OKX perm without `read_only` gives all permissions as unknown | `test_adapter_okx.py::test_an_okx_perm_list_without_read_only_*` | FIXED |
+| FLOW-3 | Med | Late miss ignored after a newer confirmation; Cancel for uncertain orders | `test_flow3_*` | FIXED |
+| FLOW-4/ENV-1 | Med | Fallback to a connection with the same exchange, environment and key fingerprint | `test_flow4_*`, `test_n2_*`, `test_the_fallback_needs_the_same_key_*` | FIXED |
+| FLOW-5 | Med | Compare-and-set connection metadata | `test_flow5_*` | FIXED |
+| DATA-3 | Med | Reverted: stocks stay non-shortable, because IBKR's 7-day fills made phantom shorts | `test_a_stock_sell_before_the_loaded_history_is_unmatched_*` | **DOCUMENTED LIMIT** (needs per-position shortability) |
+| DATA-4 | Med | Crossings evaluated as of the previous trigger close | `test_multi_timeframe_crossing_*` | FIXED (133,968 oracle checks, 0 mismatches) |
+| DATA-5 | Med | Full refetch on new holes; known gaps re-checked after max(1 h, 24 bars) | `test_perf_market.py` | FIXED |
+| DATA-6 | Med | Position currency; non-USD positions listed, excluded and noted | `test_a_position_in_another_currency_*` | FIXED |
+| PERF-1 | Med | Per-bar values computed once; at most 2 concurrent backtests, more → 429 | `test_perf_backtest.py`, `test_api.py::test_a_busy_backtest_pool_*` | FIXED (1,266 → 13 µs/bar at 1,499 bars; identical outputs) |
+| PERF-2 | Med | Reservation outside the lock; in-flight limit → 429; reservation is an upper bound | `test_perf_copilot.py` incl. `test_worst_case_concurrent_*` | FIXED |
+| PERF-3 | Med | 45-day alert retention, newest row kept, `created_at` index | `test_store_retention.py` | FIXED (bounded by activity × 45 days) |
+| SIMP-1 | Med | `analytics` extra removed; numpy declared | — (packaging) | FIXED |
+| SIMP-2 | Med | Refusal before fees, snapshot and leverage | `test_trading.py::test_a_rule_breaking_preview_makes_no_signed_calls` | FIXED |
+| GH-A | Med | — | — | **OWNER ACTION** (branch protection) |
+| GH-B | Med | CI jobs: extension; desktop offscreen | — (CI) | FIXED (not yet run on GitHub) |
+| GH-E | Med | `secret_guard.py --history` job; app secret names; type changes | `test_secret_guard.py` | FIXED. Gitleaks is an owner decision |
+| DOC-1 | Med | Stale claims corrected across README and docs | — | FIXED |
+| DOC-2 | Med | `tools/export_openapi.py`; drift test | `test_openapi_drift.py` | FIXED |
+| SEC-3 | Low | O_NOFOLLOW, owner and mode checks, 0600; DB symlink refused; DB mode tightened | `test_request_guard.py` | FIXED |
+| SEC-4/ENV-5 | Low | Any vault error becomes VaultUnavailable | `test_accounts_credentials.py` | FIXED |
+| FLOW-6 | Low | Mode generation checked before storing and before sending | `test_flow6_*` (both branches) | FIXED. Limit: a send already past its final check still goes out |
+| FLOW-7, PERF-8 | Low | Version captured with the names; jitter before the cap | `test_perf_streams.py` | FIXED |
+| FLOW-8 | Low | ETag; `If-Match` required (428), 412 on conflict; clients send it | `test_settings_concurrency.py`, extension and desktop tests | FIXED |
+| FLOW-9 | Low | `BEGIN IMMEDIATE` around read and insert | `test_store_retention.py::test_concurrent_revisions_*` | FIXED |
+| FLOW-10 | Low | Cache epoch read before the fetch | `test_accounts_api.py::test_a_snapshot_overlapping_*` | FIXED |
+| FLOW-11 | Low | Stop checked per subscription; shutdown wait 5 s | `test_perf_monitor.py`, `test_api.py::test_shutdown_*` | FIXED (shutdown test not run on old code: it would hang) |
+| FLOW-12/SEC-7 | Low | Token and user checked before the pop | `test_flow12_*` | FIXED |
+| DATA-7 | Low | UTC alignment; Monday weeks; 3d on whole days | `test_bars_that_do_not_open_*` | FIXED |
+| DATA-8 | Low | `up_to(as_of)` for native and HYBRID layers | `test_methodology.py` | FIXED |
+| DATA-9 | Low | Exact fee shares; plain output | `test_prorated_fees_*`, `test_performance_prints_plain_numbers` | FIXED |
+| DATA-10 | Low | A missing fee is excluded, not zero | `test_a_missing_fee_*` | FIXED |
+| DATA-11 | Low | bool, str and non-finite values and periods rejected | `test_boolean_*`, `test_a_period_must_be_a_real_integer` | FIXED |
+| DATA-12 | Low | `float()` on metric values | `test_numpy_candles_*` | FIXED |
+| ENV-2 | Low | HTTPException becomes MarketDataError | `test_perf_provider_http.py` | FIXED |
+| ENV-3 | Low | Empty or relative XDG ignored (engine and desktop) | `test_request_guard.py`, desktop tests | FIXED |
+| ENV-4 | Low | Vault checked before the key is sent | `test_the_vault_is_checked_before_*` | FIXED |
+| ENV-6 | Low | Strict UTF-8 and lone-surrogate check for every JSON spelling | `test_request_guard.py` | FIXED |
+| ENV-7/8/9 | Info | PySide6 ≥ 6.10; forced-colors last; border contrast ≥ 3:1 | extension and desktop tests | FIXED (real Chrome and display not tested) |
+| PERF-4/5/6 | Low | Rules loaded once per tick; 814-key cache; sync backoff | `test_perf_monitor.py`, `test_perf_market.py` | FIXED |
+| SEC-5 | Info | `Bearer ` prefix required | `test_request_guard.py` | FIXED |
+| SEC-6 | Info | No value or unknown-key echo in settings 422 | `test_settings_concurrency.py` | FIXED |
+| SIMP-4/5 | Info | Dead methods removed; extension markets from the catalog | extension and desktop tests | FIXED (desktop Performance form still uses fixed markets) |
+
+### New findings from the re-audit and verification (all fixed unless marked)
+
+| ID | Sev | Defect | Fix | Test |
+|---|---|---|---|---|
+| N1, D1 | **High** | An acknowledged order could end as USER_RESOLVED | `acknowledged=0` in SQL; refused while sending (marked before the row exists); exchange reports replace USER_RESOLVED | `test_n1_*` (4 tests) |
+| N2 | Med | Fallback used another account's key | key-hint match | `test_n2_*` |
+| N3 | Low | Older answer moved the state back; timeout overwrote a found state | forward-only state ranks; `only_from="SENDING"` | `test_n3_*` |
+| N4 | Med | IBKR cancel ignored the stored order ID | cancel by the stored ID | `test_adapter_ibkr.py::test_an_order_from_an_earlier_gateway_session_*` |
+| N5 | Low | Failures counted as misses; ignored miss reported "not listed"; refused mode change dropped previews | — | `test_n5_*` |
+| ENV-12, B | Med | Garbage HTTP reply → 500 and a stuck SENDING row; broken error body | HTTPException becomes OutcomeUnknown; safe error-body read and close | `test_adapter_binance.py` |
+| ENV-13, C | Med | Total deadline not enforced (drip, late connect) | socket watchdog | `test_perf_provider_http.py` |
+| D2 | Low | Duplicate Content-Type bypassed the Unicode check | duplicate single-valued headers → 400 | `test_duplicate_content_type_*` |
+| A | Med | First-in-first-out vs average-cost P&L made phantom trades | average-cost tracker | `test_average_cost_*` |
+| Copilot | Low | Overspend when real usage exceeded the reservation | upper-bound input estimate | `test_worst_case_*` (old 44,091 > 40,000) |
+| — | Low | Stuck acknowledged order that is no longer listed or cancellable | — | **DOCUMENTED LIMIT** |
+| D4 | Low | 4-character key hint can collide | Match on a SHA-256 key fingerprint (Codex review, PR #8, P2) | `test_the_fallback_needs_the_same_key_not_just_the_same_last_four_characters` |
+| Codex P1 | Med | A split exit lost part of the reported P&L (FIFO share plus average-cost rest) | The matched share uses average cost too, so the parts add up to the reported P&L | `test_a_split_exit_keeps_the_whole_exchange_reported_pnl` |
+| D5 | Low | Some secret spellings missed (`apiSecret`, `BINANCE_SECRET`) | — | **OPEN**: a generic `SECRET` rule matches a fake constant already in history; Gitleaks is the owner's decision |
+| — | Low | Worst-case windowed rule backtest ≈ 2.2 s; alerts ≈ 840 MB at the extreme watchlist; full cache ≈ 328 MB | — | **OPEN** (follow-ups) |
+
+### Owner actions
+
+1. Protect `main`: require a pull request and the `python`, `extension`, `desktop` and `secret-scan` checks, and block force-pushes (GH-A).
+2. Decide on Gitleaks or GitHub secret scanning with push protection, and on a Python lock file with hashes (SEC-9).
+3. Provide testnet keys for a first real testnet run, and an LLM key and budget for live AI checks. Neither has run from this repository.

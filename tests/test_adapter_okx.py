@@ -337,3 +337,12 @@ def test_cashflows_map_bills_and_include_deposits_and_withdrawals_only_on_live()
     demo, rec = adapter(Environment.TESTNET, routes)
     assert {c.kind for c in demo.cashflows(CRED)} == {"funding_fee", "commission", "realized_pnl", "internal_transfer"}
     assert not any(c["path"].startswith("/api/v5/asset/") for c in rec.calls)
+
+
+@pytest.mark.parametrize("perm", ["", " , ", "trade", "withdraw,trade"])
+def test_an_okx_perm_list_without_read_only_tells_us_nothing_and_is_refused_on_live(perm):
+    a, _ = adapter(Environment.LIVE, {("GET", "/api/v5/account/config"): ok([{**DOC_CONFIG, "perm": perm}])})
+    perms = a.permissions(CRED)
+    assert (perms.read, perms.spot_trade, perms.withdraw, perms.transfer) == (None, None, None, None)
+    with pytest.raises(PolicyRefused):  # SEC-2: an empty list was accepted on live
+        check_key_policy(Environment.LIVE, perms)

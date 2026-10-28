@@ -18,6 +18,7 @@ For the current feature status, see the [README](../README.md) and [PROGRESS.md]
 | 2026-10-27 | Exchange accounts and testnet Trading Mode (R8): Binance, Bybit, OKX, Interactive Brokers paper | PR #5 |
 | 2026-10-27 | README rebuilt as a visual tour: architecture, workflows, database, screenshots | PR #6 |
 | 2026-10-27 | Independent six-breaker audit of `main` (`0586cd1`): not release-ready, 4 High findings | `docs/audit-2026-10-27` |
+| 2026-10-28 | Six-breaker remediation: all findings fixed or documented, re-audited by six breakers and two verifiers | `fix/six-breaker-remediation` |
 
 ## Starting point
 
@@ -217,7 +218,7 @@ The rest of the work implements that boundary and tests it.
 - OKX swap sizes are in contracts, not coins.
 - IBKR has no way to confirm that a live session cannot trade, so live IBKR is unsupported.
 
-**"Not found" is not "never sent".** Right after a timeout, an exchange can briefly report an order as missing even though it was accepted. We used to mark it NOT_FOUND on the first lookup. An order now stays UNKNOWN until it has been missing for at least three lookups spread over a minute. Orders are never resent automatically, and a final state such as FILLED or CANCELED is never downgraded when an exchange purges old orders.
+**"Not found" is not "never sent".** Right after a timeout, an exchange can briefly report an order as missing even though it was accepted. We used to mark it NOT_FOUND on the first lookup. At the time, an order stayed UNKNOWN until it had been missing for at least three lookups spread over a minute; Phase 9 replaced that rule. Orders are never resent automatically, and a final state such as FILLED or CANCELED is never downgraded when an exchange purges old orders.
 
 **One number must never mix two kinds of money.** An independent review found that the portfolio added live and testnet balances together. The portfolio now shows one environment at a time, and prices come from the same exchange and environment as the balance.
 
@@ -307,6 +308,69 @@ After R8 and the README were merged, we audited `main` (`0586cd1`) as if someone
 
 **Some checks could not run, and we said so.** Security scanners were not installed, real-browser and real-display GUI tests had no isolated environment, and real testnets had no authorized keys. They are listed as BLOCKED, not counted as passes.
 
+## Phase 9: fixing what the breakers found
+
+We fixed the audit findings on `fix/six-breaker-remediation`, starting from `main` at `9488a2e`. Each fix comes with a regression test. We first ran each new test against the code before the fix, to make sure it failed there. The full tracking table, one row per finding, is in [section 11 of the audit](audits/2026-10-27-six-breaker-audit.md#11-remediation-tracking-2026-102728).
+
+**Result:**
+- All 4 High and 19 Medium findings are fixed or documented with evidence.
+- The re-audit found one new High, which is fixed.
+- No Critical or High is open.
+- The suites went from 399 / 41 / 95 to **563 / 55 / 114** passing (Python, extension, desktop), with nothing failed or skipped.
+- Release readiness still depends on CI running on GitHub and on the owner actions below.
+
+| Area | What changed |
+|---|---|
+| Order reconciliation | `state` is the last state the exchange confirmed, and it only moves forward. A lookup that does not find the order is recorded as "not listed" and never changes the state, so the app never suggests a new order. Cancel works for any order that is not final. "Mark resolved" exists only for orders the exchange never acknowledged, and is refused while a send is in flight. A lost connection falls back only to the same exchange, environment and key. |
+| Rule compiler and evaluator | An explicit timeframe is never replaced. Any word the compiler does not understand, including every negation, leaves the clause UNRESOLVED. Multi-timeframe crossings use values as of the previous trigger close. An independent oracle made 133,968 checks with 0 mismatches. |
+| Trade analytics | A close older than the loaded history becomes an "entry unknown" trade. The split is decided by average-cost realized P&L, the way exchanges compute it. Fee shares are exact, and positions in other currencies are not added to USD. |
+| Security | The body cap counts real bytes; uploads spill to disk; chunked bodies, duplicate headers and invalid Unicode are refused. Token and database files refuse symlinks. Settings saves need `If-Match`. CI scans the full git history for secrets. |
+| Performance | Backtests went from 1,266 to 13 µs per bar at 1,499 bars, with identical results. AI calls no longer hold a lock during the network call, and their budget reservation is an upper bound. The monitor went from 1,053 to 2 SQL statements per tick. Alerts have a retention window. |
+| CI and docs | New jobs for the extension, the desktop app (offscreen) and secret scanning. Every action is SHA-pinned. An OpenAPI drift test, and corrected claims across the README and docs. |
+
+### Problems and how we solved them
+
+**State and evidence were one field.** The old journal mixed "what the exchange last told us" with "what our last lookup saw". We split them into `state` and `verification`, so a missing listing can no longer rewrite history.
+
+**Our first "Mark resolved" opened a new hole.** The re-audit showed that the user could resolve an order while its send was still in flight, and the acknowledgement would arrive afterwards. A verifier then found a second gap: the "being sent" mark was set just after the journal row was written. We closed both in three layers:
+- The SQL update itself requires `acknowledged=0`.
+- The order is marked as being sent before its journal row exists.
+- Any later exchange report replaces the user's mark.
+
+**A fix created a new bug.** Making stocks shortable fixed one test case, but IBKR fills cover only 7 days. Selling a long bought earlier then became a phantom short. We reverted the change and documented stock shorts as a known limit, instead of trading one wrong answer for another.
+
+**A clever check failed against a different P&L method.** Our first way to tell a flip from an old close compared first-in-first-out P&L with the exchange's realized P&L. Exchanges use average cost, so 87 of 1,340 random histories got phantom trades. We now track the average-cost position as well. A 400-case property test against an exchange-style oracle guards it.
+
+**Regular expressions matched part of a sentence.** `re.search` found "closes above SMA 50" inside "does not close above SMA 50". Every word in a clause must now be used, apart from a few filler words.
+
+**A deadline that was only checked between reads did not hold.** A server that sends one byte at a time never triggered the check. A watchdog now shuts the socket down at the deadline, including sockets that connect late.
+
+**Our own test tripped our secret scanner.** A test used a variable named `secret_key`, which the scanner's assignment rule matches. We renamed it, and now scan every changed file before proposing a commit.
+
+**An outside reviewer found two more defects after the push.** The Codex reviewer on PR #8 reported two problems:
+- **P1:** a split exit gave the matched part its first-in-first-out P&L and the rest its average-cost P&L. The parts no longer added up to what the exchange reported: 60 instead of 110 in its example. The matched share now uses average cost too, so every split adds up to the reported P&L.
+- **P2:** the connection fallback still trusted the key's last four characters, a limit we had only documented. Two different keys ending the same way counted as one, so private requests could go to the wrong account. Each connection and order now stores a one-way SHA-256 fingerprint of the API key, and the fallback matches on that. The four characters are kept for display only.
+
+Both fixes have tests that fail on the pushed commit. The lesson: a limit that can send requests to the wrong account is a bug, not a footnote.
+
+**Workers hit a usage limit.** All three worktree workers stopped at a session limit at the same time. Their partial work was saved in their worktrees, and we resumed them instead of starting again.
+
+### Still open
+
+- **Documented limits:**
+  - Stock short sales and break-even closes older than the history cannot be detected.
+  - An acknowledged order that the exchange no longer lists or cancels stays open in the journal.
+  - A send already past its final Trading Mode check still goes out.
+- **Follow-ups:**
+  - More secret spellings for the scanner.
+  - Alert and cache memory at the largest watchlist.
+  - Worst-case windowed rules in backtests.
+  - Fixed market list in the desktop Performance form.
+- **Owner actions:**
+  - Protect `main`.
+  - Decide on Gitleaks and a Python lock file.
+  - Provide testnet keys and an AI budget for the first real runs.
+
 ## Lessons we keep
 
 1. **Count closed bars at every layer.** Most of our data bugs came from the boundary between forming and closed candles.
@@ -321,6 +385,8 @@ After R8 and the README were merged, we audited `main` (`0586cd1`) as if someone
 10. **Unknown is not "no".** A missing permission flag, a "not found" order and a 3xx response all mean "we do not know yet". Treat them as unknown and fail closed.
 11. **Check exchange facts against the docs, every time.** APIs change: hosts move, fields disappear, codes gain meanings.
 12. **Audit what you merged as if a stranger wrote it.** Green suites only prove the paths someone thought to test. Adversarial, read-only breakers with independent oracles found what the tests missed.
+13. **Re-audit the fixes too.** Our own fixes introduced one High and several Mediums; only an independent re-audit found them.
+14. **Check a heuristic against how the other side computes.** A check built on first-in-first-out failed against exchanges that use average cost.
 
 ## What's next
 

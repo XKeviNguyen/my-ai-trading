@@ -54,10 +54,11 @@ def test_analysis_with_presets_disabled_by_default_then_selected(env):
     assert r["selected_count"] == 0 and r["perspectives"]["perspectives"] == []
     assert set(r["snapshot"]["timeframes"]) >= {"1h", "4h", "1d", "1w"}
     assert "_series" not in r["snapshot"]
-    s = c.get("/api/v1/settings", headers=H).json()
+    g = c.get("/api/v1/settings", headers=H)
+    s = g.json()
     s["selected_methodologies"] = [{"methodology_id": "weinstein", "mode": "NATIVE"},
                                    {"methodology_id": "lynch", "mode": "NATIVE"}]
-    assert c.put("/api/v1/settings", json=s, headers=H).status_code == 200
+    assert c.put("/api/v1/settings", json=s, headers={**H, "If-Match": g.headers["etag"]}).status_code == 200
     r = c.get("/api/v1/analysis?symbol=SANDUSDT&analysis_timeframe=1h", headers=H).json()
     w, l = r["perspectives"]["perspectives"]
     assert w["assessment"]["evaluation_timeframe"] == "1w" and w["evaluation"]["timeframe"] == "1w"
@@ -66,9 +67,10 @@ def test_analysis_with_presets_disabled_by_default_then_selected(env):
 
 def test_settings_validation_rejects_unknown_fields_and_values(env):
     c, _, _ = env
+    tagged = {**H, "If-Match": c.get("/api/v1/settings", headers=H).headers["etag"]}
     assert c.put("/api/v1/settings", json={"selected_methodologies": [{"methodology_id": "nobody"}]},
-                 headers=H).status_code == 422
-    assert c.put("/api/v1/settings", json={"trading_api_key": "x"}, headers=H).status_code == 422
+                 headers=tagged).status_code == 422
+    assert c.put("/api/v1/settings", json={"trading_api_key": "x"}, headers=tagged).status_code == 422
 
 
 def test_strategy_compile_preview_dry_run_approve_flow(env):
@@ -178,9 +180,10 @@ def test_backtest_endpoint_rule_event_walk_forward_and_validation(env):
 
 def test_reports_save_list_export_json_and_markdown(env):
     c, _, _ = env
-    s = c.get("/api/v1/settings", headers=H).json()
+    g = c.get("/api/v1/settings", headers=H)
+    s = g.json()
     s["selected_methodologies"] = [{"methodology_id": "weinstein", "mode": "NATIVE"}]
-    c.put("/api/v1/settings", json=s, headers=H)
+    c.put("/api/v1/settings", json=s, headers={**H, "If-Match": g.headers["etag"]})
     saved = c.post("/api/v1/reports", json={"symbol": "SANDUSDT", "analysis_timeframe": "1h"}, headers=H).json()
     rid = saved["id"]
     assert [r["id"] for r in c.get("/api/v1/reports", headers=H).json()["reports"]] == [rid]
@@ -198,3 +201,36 @@ def test_reports_save_list_export_json_and_markdown(env):
 def test_markdown_escapes_untrusted_text():
     from my_ai_trading.reports import _md
     assert _md("a|b*c_d\nx") == "a\\|b\\*c\\_d x"
+
+
+def test_a_busy_backtest_pool_answers_429_instead_of_queueing(env):
+    from my_ai_trading.backtest import MAX_CONCURRENT_BACKTESTS, backtest_slot
+    from contextlib import ExitStack
+    c, _, _ = env
+    body = {"symbol": "SANDUSDT", "event_type": "BREAKOUT", "timeframe": "1d", "bars": 300, "config": {"hold_bars": 5}}
+    with ExitStack() as held:
+        for _ in range(MAX_CONCURRENT_BACKTESTS):
+            held.enter_context(backtest_slot())
+        r = c.post("/api/v1/backtest", json=body, headers=H)
+        assert r.status_code == 429 and r.headers["retry-after"] == "2"
+    assert c.post("/api/v1/backtest", json=body, headers=H).status_code == 200
+
+
+def test_shutdown_does_not_wait_forever_for_a_stuck_monitor(monkeypatch):
+    import asyncio
+    import time
+    from my_ai_trading import api as api_mod
+    from my_ai_trading.monitor import Monitor
+
+    async def stuck(self, *, stop=None, idle_s=1.0):
+        while True:  # ignores stop, like a provider call that never returns
+            await asyncio.sleep(0.05)
+    monkeypatch.setattr(Monitor, "run_forever", stuck)
+    monkeypatch.setattr(api_mod, "SHUTDOWN_WAIT_S", 0.2)
+    _, svc = make_exchange()
+    store = Store()
+    app = create_app(service=svc, store=store, copilot=Copilot(store, None), api_token=TOKEN, run_monitor=True)
+    with TestClient(app, base_url="http://127.0.0.1:8765"):
+        started = time.monotonic()
+    assert time.monotonic() - started < 3  # FLOW-11: the shutdown wait was unbounded
+    store.close()

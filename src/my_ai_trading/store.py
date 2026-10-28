@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   source TEXT NOT NULL, event_type TEXT NOT NULL, bar_open_time_ms INTEGER NOT NULL, priority INTEGER NOT NULL,
   payload_json TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS alerts_user_time ON alerts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS alerts_created ON alerts(created_at);
 CREATE TABLE IF NOT EXISTS cooldowns (key TEXT PRIMARY KEY, last_bar_open_ms INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS monitor_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS ai_usage (
@@ -100,19 +101,42 @@ class UserSettings(BaseModel):
             raise ValueError("quiet hours must be UTC hours 0..23")
 
 
+ALERT_RETENTION_MS = 45 * 86_400_000  # longer than a monthly bar can stay the last closed one
+ALERT_PRUNE_EVERY_MS = 3_600_000
+
+
+class SettingsConflict(Exception):
+    """The settings changed since the caller read them (HTTP 412)."""
+
+
+def settings_etag(data: str) -> str:
+    import hashlib
+    return '"' + hashlib.sha256(data.encode()).hexdigest()[:16] + '"'
+
+
+def xdg_dir(var: str, default: Path) -> Path:
+    """An XDG base directory; empty or relative values are ignored, as the XDG spec requires (ENV-3)."""
+    value = os.environ.get(var, "")
+    return Path(value) if os.path.isabs(value) else default
+
+
 def default_db_path() -> Path:
-    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "my-ai-trading" / "app.db"
+    return xdg_dir("XDG_DATA_HOME", Path.home() / ".local" / "share") / "my-ai-trading" / "app.db"
 
 
 class Store:
     def __init__(self, path: str | Path = ":memory:"):
         self._lock = threading.Lock()
+        self._last_prune_ms = 0
         if path != ":memory:":
             p = Path(path)
             p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if p.is_symlink():  # a dangling link would make SQLite create its target elsewhere (SEC-3)
+                raise PermissionError(f"{p} is a symbolic link; refusing to open it")
             if not p.exists():
-                p.touch(mode=0o600)
+                os.close(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+            elif p.stat().st_mode & 0o077:
+                p.chmod(0o600)  # an existing database readable by others is tightened (SEC-3)
         self._db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._finalizer = weakref.finalize(self, self._db.close)  # never leak the connection
@@ -120,6 +144,26 @@ class Store:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA foreign_keys=ON")
             self._db.executescript(SCHEMA)
+            self._migrate()
+
+    # Columns added after a table was first released: added in place, never by recreating the table.
+    _ADDED_COLUMNS = {"trading_orders": (
+        ("exchange_order_id", "TEXT"),       # the exchange's own id, once it acknowledged the order
+        ("acknowledged", "INTEGER NOT NULL DEFAULT 0"),  # 1 once the exchange has ever confirmed the order
+        ("verification", "TEXT"),            # last lookup result: confirmed / not_listed / lookup_failed
+        ("last_checked_at", "INTEGER"), ("last_seen_at", "INTEGER"), ("last_miss_at", "INTEGER"),
+        ("key_hint", "TEXT"),                # the sending key's last 4 characters, for messages only
+        ("key_fingerprint", "TEXT"),         # the sending key's identity: a fallback connection must use the same key
+    )}
+
+    def _migrate(self) -> None:
+        for table, cols in self._ADDED_COLUMNS.items():
+            have = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            for name, decl in cols:
+                if name not in have:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        # Rows written before acknowledgement tracking: an order with stored exchange data was acknowledged.
+        self._db.execute("UPDATE trading_orders SET acknowledged=1 WHERE order_json IS NOT NULL AND acknowledged=0")
 
     def close(self) -> None:
         self._finalizer()
@@ -137,10 +181,25 @@ class Store:
         rows = self._q("SELECT json FROM settings WHERE user_id=?", (user,))
         return UserSettings.model_validate_json(rows[0]["json"]) if rows else UserSettings()
 
-    def save_settings(self, s: UserSettings, user: str = LOCAL_USER) -> None:
-        self._x("INSERT INTO settings(user_id,json,updated_at) VALUES(?,?,?) "
-                "ON CONFLICT(user_id) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
-                (user, s.model_dump_json(), _now()))
+    def save_settings(self, s: UserSettings, user: str = LOCAL_USER, *, if_match: str | None = None) -> str:
+        """Save and return the new version tag. With `if_match`, save only if the stored settings still have that
+        tag (compare-and-set under the lock), else raise SettingsConflict: concurrent editors cannot silently undo
+        each other (e.g. restore a revoked AI consent)."""
+        with self._lock:
+            if if_match is not None:
+                row = self._db.execute("SELECT json FROM settings WHERE user_id=?", (user,)).fetchone()
+                current = settings_etag(row["json"] if row else UserSettings().model_dump_json())
+                if current != if_match:
+                    raise SettingsConflict("settings changed since you loaded them; reload and apply your change again")
+            data = s.model_dump_json()
+            self._db.execute("INSERT INTO settings(user_id,json,updated_at) VALUES(?,?,?) "
+                             "ON CONFLICT(user_id) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at",
+                             (user, data, _now()))
+        return settings_etag(data)
+
+    def settings_etag(self, user: str = LOCAL_USER) -> str:
+        rows = self._q("SELECT json FROM settings WHERE user_id=?", (user,))
+        return settings_etag(rows[0]["json"] if rows else UserSettings().model_dump_json())
 
     # ---- strategies ----
     def create_strategy(self, rule: StrategyRule, prompts: list[str], *, user: str = LOCAL_USER,
@@ -168,13 +227,19 @@ class Store:
     def revise_strategy(self, sid: str, rule: StrategyRule, prompts: list[str], *, user: str = LOCAL_USER) -> int:
         """A materially changed rule becomes a new DRAFT; the active version keeps running until approval."""
         self._owned(sid, user)
-        latest = self._q("SELECT version, rule_hash FROM strategy_versions WHERE strategy_id=? "
-                         "ORDER BY version DESC LIMIT 1", (sid,))[0]
-        if latest["rule_hash"] == rule.rule_hash():
-            return latest["version"]
-        with self._lock:
-            self._insert_version(sid, latest["version"] + 1, rule, prompts)
-        return latest["version"] + 1
+        with self._lock:  # read and insert in one transaction, or two revisions race for one number (FLOW-9)
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                latest = self._db.execute("SELECT version, rule_hash FROM strategy_versions WHERE strategy_id=? "
+                                          "ORDER BY version DESC LIMIT 1", (sid,)).fetchone()
+                version = latest["version"] if latest["rule_hash"] == rule.rule_hash() else latest["version"] + 1
+                if version != latest["version"]:
+                    self._insert_version(sid, version, rule, prompts)
+                self._db.execute("COMMIT")
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+        return version
 
     def approve(self, sid: str, version: int, rule_hash: str, *, user: str = LOCAL_USER) -> None:
         self._owned(sid, user)
@@ -229,9 +294,22 @@ class Store:
     def record_alert(self, event_id: str, *, user: str, instrument_key: str, timeframe: str, source: str,
                      event_type: str, bar_open_time_ms: int, priority: int, payload: dict[str, Any]) -> bool:
         """Idempotent: the same event_id is stored once; returns False for a duplicate."""
-        return self._x("INSERT OR IGNORE INTO alerts VALUES(?,?,?,?,?,?,?,?,?,?)",
-                       (event_id, user, instrument_key, timeframe, source, event_type, bar_open_time_ms, priority,
-                        json.dumps(payload, default=str), _now())) == 1
+        now = _now()
+        stored = self._x("INSERT OR IGNORE INTO alerts VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (event_id, user, instrument_key, timeframe, source, event_type, bar_open_time_ms, priority,
+                          json.dumps(payload, default=str), now)) == 1
+        if stored and now - self._last_prune_ms >= ALERT_PRUNE_EVERY_MS:
+            self.prune_alerts(now)
+        return stored
+
+    def prune_alerts(self, now_ms: int) -> int:
+        """Delete alerts older than the retention window (PERF-3). The window is longer than the longest bar, so
+        a deleted event can no longer recur and slip past the event_id dedup. The newest alert is always kept, so
+        rowids keep growing and the after_seq cursor never skips or repeats one."""
+        with self._lock:
+            self._last_prune_ms = now_ms
+            return self._db.execute("DELETE FROM alerts WHERE created_at < ? AND rowid < (SELECT MAX(rowid) FROM alerts)",
+                                    (now_ms - ALERT_RETENTION_MS,)).rowcount
 
     def alerts(self, user: str = LOCAL_USER, *, limit: int = 100, after_seq: int = 0) -> list[dict[str, Any]]:
         """after_seq=0: the newest ``limit`` alerts (newest first) for an initial view. after_seq>0: the
@@ -343,22 +421,77 @@ class Store:
     def journal_insert(self, row: dict[str, Any]) -> None:
         """Fails (IntegrityError) if the client order ID already exists: one preview, at most one order."""
         now = _now()
-        self._x("INSERT INTO trading_orders VALUES(?,?,?,?,?,?,?,?,?,?,?,0)",
+        self._x("INSERT INTO trading_orders (client_order_id, user_id, connection_id, exchange, environment, "
+                "request_json, state, order_json, message, created_at, updated_at, lookups, key_hint, key_fingerprint) "
+                "VALUES(?,?,?,?,?,?,?,NULL,NULL,?,?,0,?,?)",
                 (row["client_order_id"], row["user_id"], row["connection_id"], row["exchange"], row["environment"],
-                 row["request_json"], row["state"], None, None, row.get("created_at", now), now))
+                 row["request_json"], row["state"], row.get("created_at", now), now, row.get("key_hint"),
+                 row.get("key_fingerprint")))
 
-    _TERMINAL = ("FILLED", "CANCELED", "REJECTED", "EXPIRED")
+    _TERMINAL = ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "USER_RESOLVED")
+    # Exchange order states only move forward. USER_RESOLVED is the user's assertion, so any exchange report wins.
+    _RANK = "CASE state WHEN 'NEW' THEN 1 WHEN 'PARTIALLY_FILLED' THEN 2 WHEN 'PENDING_CANCEL' THEN 2 " \
+            "WHEN 'FILLED' THEN 3 WHEN 'CANCELED' THEN 3 WHEN 'REJECTED' THEN 3 WHEN 'EXPIRED' THEN 3 ELSE 0 END"
+    _RANKS = {"NEW": 1, "PARTIALLY_FILLED": 2, "PENDING_CANCEL": 2, "FILLED": 3, "CANCELED": 3, "REJECTED": 3,
+              "EXPIRED": 3}
 
     def journal_update(self, client_order_id: str, *, state: str, order_json: str | None = None,
-                       message: str | None = None) -> str | None:
+                       message: str | None = None, only_from: str | None = None) -> str | None:
         """Set the state, except that a final state is never replaced by a non-final one. The check and the write
         are one statement, so a concurrent cancel and status check cannot reorder them. Returns the stored state."""
         terminal = ",".join("?" * len(self._TERMINAL))
         with self._lock:
             self._db.execute(
                 f"UPDATE trading_orders SET state=?, order_json=COALESCE(?, order_json), message=?, updated_at=? "
-                f"WHERE client_order_id=? AND (state NOT IN ({terminal}) OR ? IN ({terminal}))",
-                (state, order_json, message, _now(), client_order_id, *self._TERMINAL, state, *self._TERMINAL))
+                f"WHERE client_order_id=? AND (state NOT IN ({terminal}) OR ? IN ({terminal})) AND (? IS NULL OR state=?)",
+                (state, order_json, message, _now(), client_order_id, *self._TERMINAL, state, *self._TERMINAL,
+                 only_from, only_from))
+            row = self._db.execute("SELECT state FROM trading_orders WHERE client_order_id=?",
+                                   (client_order_id,)).fetchone()
+        return row[0] if row else None
+
+    def journal_seen(self, client_order_id: str, *, state: str, order_json: str, exchange_order_id: str | None,
+                     now_ms: int) -> str | None:
+        """The exchange confirmed the order: mark it acknowledged and reset misses. The state never moves back (a
+        slow, older answer cannot undo a newer one), and an exchange report replaces USER_RESOLVED."""
+        rank = self._RANKS.get(state, 0)
+        with self._lock:
+            self._db.execute(
+                f"UPDATE trading_orders SET state=CASE WHEN {self._RANK} > ? THEN state ELSE ? END, "
+                f"order_json=CASE WHEN {self._RANK} > ? THEN order_json ELSE ? END, "
+                f"exchange_order_id=COALESCE(?, exchange_order_id), acknowledged=1, "
+                f"verification='confirmed', last_checked_at=?, last_seen_at=?, lookups=0, message=NULL, updated_at=? "
+                f"WHERE client_order_id=?",
+                (rank, state, rank, order_json, exchange_order_id, now_ms, now_ms, _now(), client_order_id))
+            row = self._db.execute("SELECT state FROM trading_orders WHERE client_order_id=?",
+                                   (client_order_id,)).fetchone()
+        return row[0] if row else None
+
+    def journal_miss(self, client_order_id: str, *, now_ms: int, started_ms: int, min_spacing_ms: int,
+                     verification: str = "not_listed") -> int | None:
+        """A lookup did not find the order. Never changes the state. Counts a miss only if the previous counted miss
+        was at least `min_spacing_ms` ago, and ignores the result if the order was seen after this lookup started
+        (a late "not seen" must not override a newer confirmation). Returns the miss count."""
+        with self._lock:
+            counted = verification == "not_listed"  # a failed lookup is no evidence either way: not a miss
+            spaced = "(? AND (last_miss_at IS NULL OR ?-last_miss_at>=?))"
+            self._db.execute(
+                "UPDATE trading_orders SET verification=?, last_checked_at=?, "
+                f"lookups=CASE WHEN {spaced} THEN lookups+1 ELSE lookups END, "
+                f"last_miss_at=CASE WHEN {spaced} THEN ? ELSE last_miss_at END, "
+                "updated_at=? WHERE client_order_id=? AND (last_seen_at IS NULL OR last_seen_at<?)",
+                (verification, now_ms, counted, now_ms, min_spacing_ms, counted, now_ms, min_spacing_ms, now_ms,
+                 _now(), client_order_id, started_ms))
+            row = self._db.execute("SELECT lookups FROM trading_orders WHERE client_order_id=?",
+                                   (client_order_id,)).fetchone()
+        return row[0] if row else None
+
+    def journal_resolve(self, client_order_id: str, *, note: str) -> str | None:
+        """The user checked at the exchange and says this order needs no more tracking (user-asserted, final)."""
+        with self._lock:
+            self._db.execute("UPDATE trading_orders SET state='USER_RESOLVED', message=?, updated_at=? "
+                             "WHERE client_order_id=? AND state IN ('SENDING','UNKNOWN','NOT_FOUND') AND acknowledged=0",
+                             (note[:300], _now(), client_order_id))
             row = self._db.execute("SELECT state FROM trading_orders WHERE client_order_id=?",
                                    (client_order_id,)).fetchone()
         return row[0] if row else None
@@ -367,16 +500,12 @@ class Store:
         rows = self._q("SELECT * FROM trading_orders WHERE client_order_id=?", (client_order_id,))
         return dict(rows[0]) if rows else None
 
-    def journal_lookup(self, client_order_id: str) -> int:
-        """Count one more 'not found' lookup; returns the new total (atomic)."""
-        with self._lock:
-            self._db.execute("UPDATE trading_orders SET lookups=lookups+1 WHERE client_order_id=?", (client_order_id,))
-            return self._db.execute("SELECT lookups FROM trading_orders WHERE client_order_id=?",
-                                    (client_order_id,)).fetchone()[0]
-
     def journal_open(self, user: str) -> list[dict[str, Any]]:
-        return [dict(r) for r in self._q("SELECT * FROM trading_orders WHERE user_id=? AND state IN ('SENDING','UNKNOWN') "
-                                         "ORDER BY created_at", (user,))]
+        """Orders whose outcome is not settled: never acknowledged (SENDING/UNKNOWN, or NOT_FOUND from older versions)
+        or acknowledged but not final, including those the exchange no longer lists."""
+        return [dict(r) for r in self._q(
+            "SELECT * FROM trading_orders WHERE user_id=? AND state NOT IN ('FILLED','CANCELED','REJECTED','EXPIRED',"
+            "'USER_RESOLVED') ORDER BY created_at", (user,))]
 
     def journal(self, user: str, *, limit: int = 100, client_order_id: str | None = None) -> list[dict[str, Any]]:
         if client_order_id is not None:

@@ -5,8 +5,10 @@
 import type { App, View } from "../app.js";
 import { badge, field, h, list, setChildren, status } from "../dom.js";
 import { fmtMs } from "../format.js";
+import { offeredAccountMarkets, type AccountMarket } from "../symbol.js";
+import { CANCEL_CONFIRM_TEXT, RESOLVE_CONFIRM_TEXT, canCancel, canResolve, stateTone, verificationLines } from "../journal.js";
 import type {
-  AccountSnapshot, ConnectionMeta, ExchangesResponse, OrderDraft, TradePreview, TradeResult,
+  AccountSnapshot, ConnectionMeta, ExchangesResponse, JournalRow, OrderDraft, TradePreview, TradeResult,
 } from "../types.js";
 
 type Section = "connections" | "portfolio" | "positions" | "orders" | "performance";
@@ -19,6 +21,7 @@ const LIFETIME_LABELS: Record<string, string> = {
   until_removed: "Until I remove it",
 };
 const PROVENANCE: Record<string, string> = { exchange_reported: "reported by exchange", derived: "calculated", estimate: "estimate" };
+const MARKET_NAMES: Record<AccountMarket, string> = { spot: "Spot", usdm_perpetual: "USD-M perpetual", stock: "Stock" };
 
 function yesNo(v: boolean | null): string {
   return v === null ? "unknown" : v ? "yes" : "no";
@@ -92,7 +95,7 @@ export class AccountsView implements View {
       else if (this.section === "portfolio") await this.renderPortfolio();
       else if (this.section === "positions") await this.renderPositions();
       else if (this.section === "orders") await this.renderOrders();
-      else this.renderPerformance();
+      else await this.renderPerformance();
     } catch (err) {
       setChildren(this.body, this.app.errorView(err));
     }
@@ -347,7 +350,7 @@ export class AccountsView implements View {
     await load();
   }
 
-  private ordersFor(conn: ConnectionMeta, snap: AccountSnapshot, journal: { client_order_id: string; state: string; message: string | null; request_json: string }[], needsReconcile: string[]): HTMLElement[] {
+  private ordersFor(conn: ConnectionMeta, snap: AccountSnapshot, journal: JournalRow[], needsReconcile: string[]): HTMLElement[] {
     const open = snap.open_orders;
     const out: HTMLElement[] = [
       h("h3", null, `Open orders (${open.length})`),
@@ -373,41 +376,68 @@ export class AccountsView implements View {
     return out;
   }
 
-  private journalRow(j: { client_order_id: string; state: string; message: string | null; request_json: string }, stuck: boolean): HTMLElement {
+  private journalRow(j: JournalRow, stuck: boolean): HTMLElement {
     let summary = j.client_order_id;
     try {
       const r = JSON.parse(j.request_json) as Record<string, string>;
       summary = `${r["side"] ?? ""} ${r["quantity"] ?? ""} ${r["symbol"] ?? ""} ${r["type"] ?? ""}${r["price"] && r["price"] !== "None" ? ` @ ${r["price"]}` : ""}`;
     } catch { /* keep the id */ }
+    const row: JournalRow = { ...j };
     const msg = h("div", { "aria-live": "polite" });
+    const head = h("div", { class: "event-head" });
+    const details = h("div");
+    const cancelBtn = h("button", { type: "button", class: "danger", "aria-label": `Cancel ${summary}`, onclick: () => {
+      if (confirm(CANCEL_CONFIRM_TEXT)) void act(() => this.app.client.cancelOrder(row.client_order_id));
+    } }, "Cancel order");
+    const resolveBtn = h("button", { type: "button", "aria-label": `Mark ${summary} resolved`, onclick: () => {
+      if (confirm(RESOLVE_CONFIRM_TEXT)) void act(() => this.app.client.resolveOrder(row.client_order_id));
+    } }, "Mark resolved…");
+    const paint = () => {
+      setChildren(head, h("strong", null, summary), badge(row.state, stateTone(row, stuck)));
+      setChildren(details,
+        row.message ? h("p", { class: "small muted" }, row.message) : null,
+        verificationLines(row).map((line) => h("p", { class: "small" }, line)));
+      cancelBtn.hidden = !canCancel(row);
+      resolveBtn.hidden = !canResolve(row);
+    };
     const act = async (fn: () => Promise<TradeResult>) => {
+      setChildren(msg, status("loading", "Asking the exchange…"));
       try {
         const r = await fn();
-        setChildren(msg, status(r.state === "UNKNOWN" ? "info" : "ok", `${r.state}${r.note ? ` — ${r.note}` : ""}`));
+        row.state = r.state;
+        if (r.verification !== undefined) {
+          row.verification = r.verification;
+          row.last_checked_at = Date.now();
+          if (r.verification === "confirmed") {
+            row.acknowledged = 1;
+            row.last_seen_at = row.last_checked_at;
+          }
+        }
+        if (r.misses !== undefined) row.lookups = r.misses;
+        const uncertain = r.verification === "not_listed" || r.verification === "lookup_failed" || r.state === "UNKNOWN";
+        setChildren(msg, status(uncertain ? "info" : "ok", `${r.state}${r.note ? ` — ${r.note}` : ""}`));
+        paint();
       } catch (err) {
         setChildren(msg, this.app.errorView(err));
       }
     };
-    const live = ["NEW", "PARTIALLY_FILLED"].includes(j.state);
+    paint();
     return h(
       "li",
       null,
-      h("div", { class: "event-head" }, h("strong", null, summary), badge(j.state, stuck ? "warn" : j.state === "REJECTED" ? "err" : "muted")),
-      j.message ? h("p", { class: "small muted" }, j.message) : null,
+      head,
+      details,
       h("div", { class: "toolbar" },
-        h("button", { type: "button", onclick: () => void act(() => this.app.client.reconcile(j.client_order_id)) }, "Check status"),
-        live ? h("button", { type: "button", class: "danger", onclick: () => {
-          if (confirm("Cancel this testnet order?")) void act(() => this.app.client.cancelOrder(j.client_order_id));
-        } }, "Cancel order") : null),
+        h("button", { type: "button", onclick: () => void act(() => this.app.client.reconcile(row.client_order_id)) }, "Check status"),
+        cancelBtn,
+        resolveBtn),
       msg,
     );
   }
 
   private ticket(conn: ConnectionMeta): HTMLElement {
     const symbol = h("input", { type: "text", value: this.app.instrument?.symbol ?? "BTCUSDT", maxlength: "30", autocomplete: "off", spellcheck: "false" });
-    const MARKET_NAMES: Record<string, string> = { spot: "Spot", usdm_perpetual: "USD-M perpetual", stock: "Stock" };
-    const offered = this.catalog?.exchanges.find((e) => e.id === conn.exchange)?.markets ?? ["spot", "usdm_perpetual"];
-    const market = h("select", null, offered.filter((m) => m in MARKET_NAMES).map((m) => h("option", { value: m }, MARKET_NAMES[m]!)));
+    const market = h("select", null, this.marketOptions(conn));
     const side = h("select", null, h("option", { value: "buy" }, "Buy"), h("option", { value: "sell" }, "Sell"));
     const type = h("select", null, h("option", { value: "limit" }, "Limit"), h("option", { value: "market" }, "Market"));
     const qty = h("input", { type: "text", inputmode: "decimal", autocomplete: "off" });
@@ -487,12 +517,26 @@ export class AccountsView implements View {
     );
   }
 
+  /** Only the markets the connection's exchange offers (e.g. stock for a broker), from the exchange catalog. */
+  private marketOptions(conn: ConnectionMeta | undefined): HTMLOptionElement[] {
+    const listed = conn ? this.catalog?.exchanges.find((e) => e.id === conn.exchange)?.markets : undefined;
+    return offeredAccountMarkets(listed).map((m) => h("option", { value: m }, MARKET_NAMES[m]));
+  }
+
   // ---------- performance ----------
-  private renderPerformance(): void {
+  private async renderPerformance(): Promise<void> {
     if (!this.connections.length) return this.needConnection();
+    this.catalog ??= await this.app.client.exchanges();
     const pick = this.connectionPicker();
     const symbol = h("input", { type: "text", value: this.app.instrument?.symbol ?? "BTCUSDT", maxlength: "30", autocomplete: "off" });
-    const market = h("select", null, h("option", { value: "spot" }, "Spot"), h("option", { value: "usdm_perpetual" }, "USD-M perpetual"));
+    const market = h("select");
+    const syncMarkets = () => {
+      const previous = market.value;
+      setChildren(market, this.marketOptions(this.connections.find((c) => c.connection_id === pick.value)));
+      if ([...market.options].some((o) => o.value === previous)) market.value = previous;
+    };
+    pick.addEventListener("change", syncMarkets);
+    syncMarkets();
     const out = h("div", { "aria-live": "polite" });
     const run = async (e: Event) => {
       e.preventDefault();

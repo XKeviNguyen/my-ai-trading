@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable
 
 from .adapters import base
-from .adapters.base import ExchangeAdapter, ExchangeError
+from .adapters.base import ExchangeAdapter, ExchangeError, plain
 from .analytics import RiskLimits, closed_trades, portfolio, trade_stats
 from .credentials import ConnectionMeta, Credential, CredentialError, CredentialStore, Lifetime
 from .models import AccountSnapshot, Cashflow, Environment, Fill, KeyPermissions, Order
@@ -46,6 +46,7 @@ class AccountService:
         self._factory = adapter_factory or (lambda ex, env: base.adapter_for(ex, env))
         self._clock = clock
         self._cache: dict[str, tuple[float, AccountSnapshot]] = {}
+        self._cache_epoch = 0
         self._lock = threading.Lock()
 
     @staticmethod
@@ -65,6 +66,7 @@ class AccountService:
         adapter = self.adapter(exchange, environment)
         if adapter.INFO.needs_passphrase and credential.passphrase is None:
             raise PolicyRefused(f"{adapter.INFO.name} keys need their passphrase")
+        self.credentials.require_vault(lifetime)
         perms = adapter.permissions(credential)  # also proves the key works (signed request)
         check_key_policy(environment, perms)
         return self.credentials.save(user=user, exchange=exchange, environment=environment,
@@ -75,11 +77,14 @@ class AccountService:
         return self.credentials.list(user=user)
 
     def disconnect(self, connection_id: str, *, user: str) -> bool:
-        self.clear_cache(connection_id)
-        return self.credentials.delete(connection_id, user=user)
+        try:
+            return self.credentials.delete(connection_id, user=user)
+        finally:
+            self.clear_cache(connection_id)  # after the delete, so an overlapping snapshot cannot re-cache (FLOW-10)
 
     def clear_cache(self, connection_id: str | None = None) -> None:
         with self._lock:
+            self._cache_epoch += 1
             if connection_id is None:
                 self._cache.clear()
             else:
@@ -90,6 +95,8 @@ class AccountService:
         return meta, cred, self.adapter(meta.exchange, meta.environment)
 
     def snapshot(self, connection_id: str, *, user: str, max_age_s: float = SNAPSHOT_TTL_S) -> AccountSnapshot:
+        with self._lock:
+            epoch = self._cache_epoch  # read before the connection is opened: see disconnect()
         meta, cred, adapter = self.open_connection(connection_id, user)  # check expiry even when a cached copy exists
         with self._lock:
             hit = self._cache.get(connection_id)
@@ -97,7 +104,8 @@ class AccountService:
             return hit[1]
         snap = adapter.snapshot(cred, meta.connection_id)
         with self._lock:
-            self._cache[connection_id] = (self._clock(), snap)
+            if epoch == self._cache_epoch:  # a disconnect during the fetch must not leave private data cached
+                self._cache[connection_id] = (self._clock(), snap)
         return snap
 
     def order_history(self, connection_id: str, *, user: str, symbol: str, market: str, limit: int = 100) -> list[Order]:
@@ -157,5 +165,5 @@ class AccountService:
         trades = history.trades
         return {"symbol": symbol, "market": market, **trade_stats(trades, limits=limits),
                 "unmatched_sells": history.unmatched_sells,
-                "closed_trades": [{"side": t.side, "quantity": str(t.quantity), "pnl": str(t.pnl), "fees": str(t.fees),
+                "closed_trades": [{"side": t.side, "quantity": plain(t.quantity), "pnl": plain(t.pnl), "fees": plain(t.fees),
                                    "closed_ms": t.closed_ms, "provenance": t.provenance} for t in trades[-200:]]}

@@ -2,7 +2,7 @@
   "name": "my-ai-trading-extension",
   "version": "0.1.0",
   "private": true,
-  "description": "Read-only Chrome Side Panel client for the local My AI Trading API",
+  "description": "Chrome Side Panel client for the local My AI Trading API (live accounts read-only, testnet orders confirmed per order)",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build.mjs",

@@ -158,9 +158,10 @@ def test_portfolio_aggregates_connections_and_reports_failures_without_crashing(
     clock.t += 3601  # the 1-hour connection expires and is dropped; the session one keeps working
     out = c.get("/api/v1/accounts/portfolio", headers=H).json()
     assert out["total_value_usd"]["value"] == "1234.50" and len(out["connections"]) == 1
-    s = c.get("/api/v1/settings", headers=H).json()
+    g = c.get("/api/v1/settings", headers=H)
+    s = g.json()
     s["risk_limits"]["max_asset_concentration_pct"] = 75
-    assert c.put("/api/v1/settings", json=s, headers=H).status_code == 200
+    assert c.put("/api/v1/settings", json=s, headers={**H, "If-Match": g.headers["etag"]}).status_code == 200
     assert c.get("/api/v1/accounts/portfolio", headers=H).json()["limits"]["max_asset_concentration_pct"] == 75
 
 
@@ -214,3 +215,49 @@ def test_adapter_completeness_warnings_reach_the_portfolio(env, monkeypatch):
     assert out["completeness_warnings"] == ["fakeex: BTC-USD-SWAP (inverse) not included in positions",
                                             "fakeex: margin: not enabled for this key"]
     assert out["connections"][0]["warnings"] == ["BTC-USD-SWAP (inverse) not included in positions"]
+
+
+def test_the_vault_is_checked_before_the_key_is_sent_to_the_exchange():
+    from my_ai_trading.accounts.credentials import Credential, Lifetime, Secret, VaultUnavailable
+    clock, sent = Clock(), []
+
+    class Recording(FakeExchange):
+        def permissions(self, cred):
+            sent.append(cred.key_hint)
+            return self.perms
+
+    def no_vault():
+        raise VaultUnavailable("no vault")
+    accounts = AccountService(CredentialStore(Store(), persistent_vault=no_vault, clock=clock),
+                              adapter_factory=lambda ex, e: Recording(e, clock=clock), clock=clock)
+    with pytest.raises(VaultUnavailable):  # ENV-4: the key used to reach the exchange first
+        accounts.connect(user="local", exchange="fakeex", environment=Environment.TESTNET,
+                         credential=Credential(Secret("FAKEKEY-abcd"), Secret(SECRET)), lifetime=Lifetime.DAYS_7,
+                         label="x")
+    assert sent == []
+
+
+def test_a_snapshot_overlapping_a_disconnect_is_not_cached():
+    import threading
+    from my_ai_trading.accounts.credentials import Credential, Lifetime, Secret
+    clock = Clock()
+    started, release = threading.Event(), threading.Event()
+
+    class Slow(FakeExchange):
+        def snapshot(self, cred, connection_id):
+            started.set()
+            release.wait(5)
+            return super().snapshot(cred, connection_id)
+
+    accounts = AccountService(CredentialStore(Store(), persistent_vault=MemoryVault, clock=clock),
+                              adapter_factory=lambda ex, e: Slow(e, clock=clock), clock=clock)
+    meta = accounts.connect(user="local", exchange="fakeex", environment=Environment.TESTNET,
+                            credential=Credential(Secret("FAKEKEY-abcd"), Secret(SECRET)),
+                            lifetime=Lifetime.SESSION, label="x")
+    t = threading.Thread(target=accounts.snapshot, args=(meta.connection_id,), kwargs={"user": "local"})
+    t.start()
+    assert started.wait(5)
+    assert accounts.disconnect(meta.connection_id, user="local")
+    release.set()
+    t.join(5)
+    assert meta.connection_id not in accounts._cache  # FLOW-10: private data stayed cached after disconnect

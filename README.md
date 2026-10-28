@@ -8,7 +8,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.14-3776AB?logo=python&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/Chrome%20extension-MV3%20%C2%B7%20TypeScript-3178C6?logo=typescript&logoColor=white)
 ![Desktop](https://img.shields.io/badge/desktop-PySide6%20(Qt)-41CD52?logo=qt&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-519%20passing-a4ff6a)
+[![CI jobs](https://img.shields.io/badge/CI-Python%20%C2%B7%20extension%20%C2%B7%20desktop%20%C2%B7%20secret%20scan-a4ff6a)](.github/workflows/ci.yml)
 ![Read-only](https://img.shields.io/badge/live%20accounts-read--only-36f1ff)
 
 <img src="docs/images/hero-side-panel.png" alt="Chrome side panel: multi-timeframe analysis, Copilot facts, and a testnet order preview with exchange-rule checks" width="100%">
@@ -78,8 +78,8 @@ Every alert and answer shows its evidence: the values, the candle they came from
 | **Copilot and strategies** | Copilot | 🧪 | Facts always come from the engine. Optional AI interpretation is clearly labeled |
 | | Challenge My Thesis | ✅ | Evidence for and against, assumptions, unknowns, falsification levels |
 | | 20 trader profiles | 🧪 | Native, Hybrid, Adapted or Custom modes. Seven have rule checks (Minervini, Weinstein, Turtles, Darvas, Williams, Raschke, Brandt) |
-| | Strategy Studio | ✅ | Plain English to a typed rule. Preview, dry-run, approve one exact version, deactivate |
-| **Vision and ML** | Chart screenshots | 🧪 | OpenCV candle geometry and Tesseract OCR: **99.53%** of price-axis labels read exactly on a held-out benchmark |
+| | Strategy Studio | ✅ | Plain English to a typed rule. Preview, dry-run, approve one exact version, deactivate. A clause the compiler cannot map exactly stays UNRESOLVED instead of being guessed |
+| **Vision and ML** | Chart screenshots | 🧪 | OpenCV candle geometry and Tesseract OCR: **99.53%** of price-axis labels read exactly on a held-out **synthetic** benchmark (not yet tested on real screenshots) |
 | | ML research lab | 🧪 | scikit-learn and LightGBM in walk-forward folds with purge gaps, calibration and leakage checks |
 | | Backtesting | ✅ | Next-bar fills, fees, slippage, perpetual funding, ATR stops; always labeled hypothetical |
 | **Accounts** | Exchange connections | 🧪 | Binance, Bybit, OKX by API key; Interactive Brokers paper through IBKR's own gateway |
@@ -243,7 +243,7 @@ sequenceDiagram
     T-->>UI: state + note
 ```
 
-**Order states.** Final states are never overwritten by an older status, and the check runs inside one SQL statement.
+**Order states.** The state is the last one the exchange confirmed, and it only moves forward: an older or slower answer never moves it back, and the check runs inside one SQL statement. A lookup that does not find the order changes nothing; it is recorded separately as "not listed", and the app says "do not place it again". You can cancel any order that is not final. You can mark an order resolved only if the exchange never acknowledged it, only after you checked the exchange's order history, and never while it is being sent. A later exchange report replaces that mark.
 
 ```mermaid
 stateDiagram-v2
@@ -252,16 +252,18 @@ stateDiagram-v2
     SENDING --> REJECTED: definite error
     SENDING --> UNKNOWN: timeout / 5xx / status unknown
     UNKNOWN --> NEW: found on lookup
-    UNKNOWN --> NOT_FOUND: missing after 3 lookups over 60 s
+    SENDING --> USER_RESOLVED: you checked the exchange (never acknowledged)
+    UNKNOWN --> USER_RESOLVED: you checked the exchange (never acknowledged)
+    USER_RESOLVED --> NEW: the exchange reports it after all
     NEW --> PARTIALLY_FILLED
     PARTIALLY_FILLED --> FILLED
     NEW --> FILLED
     NEW --> CANCELED: you confirm a cancel
+    UNKNOWN --> CANCELED: you confirm a cancel
     PARTIALLY_FILLED --> CANCELED
     FILLED --> [*]
     CANCELED --> [*]
     REJECTED --> [*]
-    NOT_FOUND --> [*]
 ```
 
 ### 5. An exchange key's lifetime
@@ -369,13 +371,13 @@ erDiagram
 | Stored | Where | Never stored |
 |---|---|---|
 | Settings, strategies, alerts, reports, AI usage, AI cache, order journal | SQLite | API secrets and passphrases |
-| Exchange connection metadata (no secrets) | SQLite | Full API keys (only the last 4 characters) |
+| Exchange connection metadata (no secrets) | SQLite | Full API keys (only the last 4 characters, for display, and a one-way SHA-256 fingerprint, to recognize the same key) |
 | Exchange API secrets (optional, with expiry) | OS credential vault | Any file, browser storage, logs or AI prompts |
 | Live account balances and positions | Memory only, about 15 s | Disk |
 
 ## API surface
 
-All routes live under `/api/v1` on `127.0.0.1:8765`. Every route except `/health` needs the bearer token.
+All routes live under `/api/v1` on `127.0.0.1:8765`. Every route except `/health` needs the bearer token. [docs/api/openapi.json](docs/api/openapi.json) is generated from the app by `tools/export_openapi.py`, and a test fails when it drifts.
 
 | Group | Routes | Notes |
 |---|---|---|
@@ -383,9 +385,9 @@ All routes live under `/api/v1` on `127.0.0.1:8765`. Every route except `/health
 | **Strategy Studio** | `POST /strategies/compile` · `POST /strategies/dry-run` · `GET/POST /strategies` · `PUT /strategies/{id}` · `POST /strategies/{id}/versions/{v}/approve` · `POST /strategies/{id}/deactivate` | Approval is bound to the exact `rule_hash` you previewed |
 | **Copilot** | `POST /copilot/ask` · `POST /copilot/challenge` · `POST /copilot/vision` | Screenshot size checked before decoding |
 | **Monitoring** | `GET /alerts?after_seq=` · `GET /monitor/status` | Cursor paging that never skips alerts |
-| **Workspace** | `GET/PUT /settings` · `GET/POST /reports` · `GET /reports/{id}?format=markdown` · `GET /usage` | |
+| **Workspace** | `GET/PUT /settings` · `GET/POST /reports` · `GET /reports/{id}?format=markdown` · `GET /usage` | `PUT /settings` needs `If-Match` (the `ETag` from `GET`): 428 without it, 412 if the settings changed meanwhile |
 | **Accounts** (private) | `GET /accounts/exchanges` · `GET/POST /accounts/connections` · `DELETE /accounts/connections/{id}` · `GET …/{id}/snapshot` · `…/orders` · `…/fills` · `…/cashflows` · `…/performance` · `GET /accounts/portfolio` · `POST /accounts/cache/clear` | Web pages are refused even with the token; separate rate limit |
-| **Trading** (private, testnet) | `GET /trading/consent` · `PUT /trading/mode` · `POST /trading/preview` · `POST /trading/orders` · `GET /trading/orders` · `POST /trading/orders/{id}/reconcile` · `POST /trading/orders/{id}/cancel` | Stricter rate limit; returns 409 with the reason when refused |
+| **Trading** (private, testnet) | `GET /trading/consent` · `PUT /trading/mode` · `POST /trading/preview` · `POST /trading/orders` · `GET /trading/orders` · `POST /trading/orders/{id}/reconcile` · `POST /trading/orders/{id}/cancel` · `POST /trading/orders/{id}/resolve` | Stricter rate limit; returns 409 with the reason when refused. |
 
 ## Tech stack
 
@@ -398,10 +400,10 @@ All routes live under `/api/v1` on `127.0.0.1:8765`. Every route except `/health
 | **Credentials** | `keyring` (Secret Service, KWallet, macOS Keychain, Windows Credential Manager) | Secrets stay in the operating system's vault |
 | **AI** | Anthropic SDK (Claude), adaptive effort, server-side fallback | Optional; facts never depend on it |
 | **Vision** | OpenCV, Tesseract 5 | Local, zero-token screenshot reading |
-| **ML** | scikit-learn, LightGBM, numpy, pandas | Baselines first; walk-forward validation |
+| **ML** | scikit-learn, LightGBM, numpy | Baselines first; walk-forward validation |
 | **Extension** | TypeScript, Chrome MV3 side panel, no framework, no bundler | Small attack surface; text-only DOM builder (no `innerHTML`) |
 | **Desktop** | PySide6 (Qt Essentials), Fusion style, bundled fonts | One codebase for Linux, macOS and Windows (tested on Linux so far) |
-| **Design** | Neon night theme, Chakra Petch + Share Tech Mono (SIL OFL) | One color per kind of information; WCAG AA contrast |
+| **Design** | Neon night theme, Chakra Petch + Share Tech Mono (SIL OFL) | One color per kind of information; text meets WCAG AA contrast |
 | **Quality** | pytest, Hypothesis, node:test, GitHub Actions (SHA-pinned) | Property tests for indicators; offline, deterministic suites |
 
 ## Security model
@@ -412,7 +414,7 @@ All routes live under `/api/v1` on `127.0.0.1:8765`. Every route except `/health
 | Oversized or malicious requests | Content-Length caps before the body is read; image dimensions checked before decoding | `api.py`, `chartvision.py` |
 | Prompt injection into strategies | Prompts compile to a typed rule language; no `eval`, shell or SQL; ReDoS-safe clause limits | `compiler.py`, `rules.py` |
 | A live key that can move money | Live keys must be confirmed read-only; unknown permissions are refused | `accounts/service.py` |
-| Secrets leaking | `Secret` type never prints; 422 errors never echo input; secrets only in memory or the OS vault; a pre-commit secret guard | `accounts/credentials.py`, `tools/secret_guard.py` |
+| Secrets leaking | `Secret` type never prints; 422 errors never echo input; secrets only in memory or the OS vault; a pre-commit secret guard and a full-history scan in CI | `accounts/credentials.py`, `tools/secret_guard.py` |
 | Duplicate or blind orders | Single-use 60 s confirmation, journal before send, reconcile instead of resend, testnet-only checks in both the service and every adapter | `accounts/trading.py`, `accounts/adapters/*` |
 | AI acting on its own | No code path from the Copilot to order submission; AI output is labeled and never executed | `copilot.py` |
 | Untrusted text in the UI | Text nodes only in the extension; plain-text widgets only in the desktop app, enforced by tests | `extension/src/dom.ts`, `desktop/tests/test_source_safety.py` |
@@ -432,16 +434,20 @@ All routes live under `/api/v1` on `127.0.0.1:8765`. Every route except `/health
 
 ## Quality and testing
 
-| Suite | Tests | What it covers |
-|---|---:|---|
-| Python engine | **383** | Indicators (incl. property-based), closed-bar rules, monitor, compiler, API security, credentials, all four adapters, trading flows, analytics, streams, OCR benchmark smoke test |
-| Chrome extension | **41** | API client, error kinds, ID validation, security scan of the built bundle (no `innerHTML`, no remote resources) |
-| Desktop app | **95** | Offscreen UI integration against the real engine, secret handling, plain-text-only source rules, theme contrast |
-| **Total** | **519** | Offline and deterministic; no network or real accounts |
+Every pull request runs four [CI](.github/workflows/ci.yml) jobs. The CI run shows the current test counts.
+
+| Suite | CI job | What it covers |
+|---|---|---|
+| Python engine | `python` (3.11 and 3.14) | Indicators (incl. property-based), closed-bar rules, monitor, compiler, API security, credentials, all four adapters, trading flows, analytics, streams, OCR benchmark smoke test, OpenAPI spec drift |
+| Chrome extension | `extension` (Node 22) | Type-check, build, API client, error kinds, ID validation, security scan of the built bundle (no `innerHTML`, no remote resources) |
+| Desktop app | `desktop` (offscreen Qt) | Offscreen UI integration against the real engine, secret handling, plain-text-only source rules, theme contrast |
+| Secret scan | `secret-scan` | `tools/secret_guard.py --history` over every commit reachable from the tested commit |
+
+All suites are offline and deterministic; they use no network and no real accounts.
 
 - **OCR benchmark:** 83.06% → **99.53%** exact reads on 400 held-out synthetic charts (2,970 labels) never used for tuning. Reproduce with `tools/ocr_benchmark.py --split heldout`; method and limits in [OCR_BENCHMARK.md](docs/OCR_BENCHMARK.md).
-- **Independent reviews:** read-only "breaker" reviews (security, data, flow, environment, performance, simplicity) run before each major merge, and every confirmed finding gets a regression test.
-- **Codebase size:** about 9,800 lines of Python, 5,300 lines of Python tests, 3,900 lines of TypeScript, and 4,200 lines of desktop code.
+- **Independent reviews:** read-only "breaker" reviews (security, data, flow, environment, performance, simplicity) run by convention before major merges; nothing enforces them. Each confirmed finding should get a regression test. The latest audit is in [docs/audits](docs/audits/).
+- **Codebase size (2026-10-27):** about 10,800 lines of Python, 7,500 lines of Python tests, 4,200 lines of TypeScript, and 4,300 lines of desktop code.
 
 ## Repository layout
 
@@ -458,7 +464,7 @@ my-ai-trading/
 ├── extension/                Chrome MV3 side panel (TypeScript)
 ├── desktop/                  PySide6 desktop app
 ├── tests/                    Python test suite
-├── tools/                    secret_guard.py · ocr_benchmark.py
+├── tools/                    secret_guard.py · ocr_benchmark.py · export_openapi.py
 └── docs/                     product requirements, security, journey, guides
 ```
 
@@ -501,7 +507,6 @@ desktop/.venv-desktop/bin/my-ai-trading-desktop
 | `vision` | `pip install -e '.[vision]'` plus `apt install tesseract-ocr` or `brew install tesseract` | Local screenshot analysis |
 | `ml` | `pip install -e '.[ml]'` | ML research lab |
 | `accounts` | `pip install -e '.[accounts]'` | Exchange connections, OS vault, live streams |
-| `analytics` | `pip install -e '.[analytics]'` | Portfolio analytics extras |
 
 **Try testnet trading:** create a testnet key (Binance spot at testnet.binance.vision, Binance futures demo at demo.binance.com, Bybit testnet, or OKX demo trading). Then open **Accounts → Connections**, choose **Testnet / demo**, and keep the default **This session only**.
 

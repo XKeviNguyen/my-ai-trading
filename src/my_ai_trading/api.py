@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 import secrets
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -21,19 +23,19 @@ import re
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi import Path as PathParam
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import __version__
-from .backtest import BacktestConfig, run_backtest, walk_forward
+from .backtest import BacktestBusyError, BacktestConfig, run_backtest, walk_forward
 from .accounts.api import account_router
 from .accounts.credentials import CredentialStore
 from .accounts.service import AccountService
 from .accounts.trading import TradingService
 from .accounts.trading_api import trading_router
 from .compiler import compile_prompts
-from .copilot import Copilot, MAX_IMAGE_BYTES, default_provider
+from .copilot import Copilot, CopilotBusyError, MAX_IMAGE_BYTES, default_provider
 from .domain import Timeframe
 from .market import DEFAULT_TIMEFRAMES, MarketDataService
 from .methodology import PROFILES
@@ -42,28 +44,40 @@ from .perspectives import evaluate_perspectives
 from .providers.binance import BinancePublic, MarketDataError, RateLimitedError
 from .reports import to_markdown
 from .rules import StrategyRule, evaluate, preview
-from .store import LOCAL_USER, Store, UserSettings, default_db_path
+from .store import LOCAL_USER, SettingsConflict, Store, UserSettings, default_db_path, xdg_dir
 
 EXTENSION_ORIGIN_RE = r"^chrome-extension://[a-p]{32}$"
 Market = Literal["usdm_perpetual", "spot"]
 
 
 def token_path() -> Path:
-    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return base / "my-ai-trading" / "api_token"
+    return xdg_dir("XDG_CONFIG_HOME", Path.home() / ".config") / "my-ai-trading" / "api_token"
 
 
 def load_or_create_token(path: Path | None = None) -> str:
+    """Read the token without following symlinks; refuse a file owned by someone else (SEC-3)."""
     path = path or token_path()
-    if path.exists():
-        tok = path.read_text().strip()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        fd = None
+    if fd is not None:
+        with os.fdopen(fd) as f:
+            st = os.fstat(f.fileno())
+            if st.st_uid != os.getuid():
+                raise PermissionError(f"{path} is owned by another user")
+            if st.st_mode & 0o077:
+                os.fchmod(f.fileno(), 0o600)
+            tok = f.read().strip()
         if len(tok) >= 32:
             return tok
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tok = secrets.token_urlsafe(32)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(tok)
+    os.replace(tmp, path)
     return tok
 
 
@@ -85,6 +99,9 @@ class TokenBucket:
 
 
 MAX_JSON_BYTES = 64 * 1024
+SPOOL_BYTES = 1024 * 1024
+REPLAY_CHUNK = 64 * 1024
+SHUTDOWN_WAIT_S = 5.0
 MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 64 * 1024
 PUBLIC_PATHS = frozenset({"/api/v1/health"})
 UPLOAD_PATHS = frozenset({"/api/v1/copilot/vision"})
@@ -106,9 +123,33 @@ def _model_fields() -> frozenset[str]:
 SAFE_LOC_NAMES = _model_fields()
 
 
+def _settings_fields() -> frozenset[str]:
+    """Field names of UserSettings and the models nested in it, for 422 locations."""
+    import typing
+    names: set[str] = set()
+    todo = [UserSettings]
+    while todo:
+        m = todo.pop()
+        for f in m.model_fields.values():
+            stack = [f.annotation]
+            while stack:
+                t = stack.pop()
+                if isinstance(t, type) and issubclass(t, BaseModel) and t not in todo:
+                    todo.append(t)
+                stack.extend(typing.get_args(t))
+        names.update(m.model_fields)
+    return frozenset(names)
+
+
+SETTINGS_FIELDS = _settings_fields()
+
+
 class RequestGuard:
     """Outer ASGI guard that runs BEFORE any body is read or parsed: Host allowlist (DNS rebinding),
-    bearer token for every API route except health, and a hard Content-Length cap."""
+    bearer token for every API route except health, and a hard body cap.
+
+    The cap counts the bytes actually received, not only the declared Content-Length, and chunked bodies are
+    refused (SEC-1). Bodies are small (64 KiB JSON, one image), so the guard reads them before the app does."""
 
     def __init__(self, app, *, allowed_hosts: set[str], token: str, extension_id: str | None = None):
         self.app, self.allowed_hosts, self.token = app, allowed_hosts, token.encode()
@@ -120,12 +161,16 @@ class RequestGuard:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
+        names = [k.lower() for k, _ in scope.get("headers", [])]
+        if any(names.count(n) > 1 for n in _SINGLE_HEADERS):  # the guard and the app must read the same value
+            return await _reject(send, 400, "duplicate request header")
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
         if headers.get(b"host", b"").decode("latin-1") not in self.allowed_hosts:
             return await _reject(send, 421, "host not allowed")
         path, method = scope.get("path", ""), scope.get("method", "GET")
         if method != "OPTIONS" and path.startswith("/api/") and path not in PUBLIC_PATHS:
-            supplied = headers.get(b"authorization", b"").removeprefix(b"Bearer ").strip()
+            auth = headers.get(b"authorization", b"")
+            supplied = auth.removeprefix(b"Bearer ").strip() if auth.startswith(b"Bearer ") else b""  # SEC-5
             if not supplied or not hmac.compare_digest(supplied, self.token):
                 return await _reject(send, 401, "missing or invalid API token")
         if path.startswith(PRIVATE_PREFIXES):
@@ -136,13 +181,70 @@ class RequestGuard:
             prefix = next(p for p in PRIVATE_PREFIXES if path.startswith(p))
             if method != "OPTIONS" and not self.buckets[prefix].take():
                 return await _reject(send, 429, "too many private requests; slow down")
+        if b"transfer-encoding" in headers:
+            return await _reject(send, 411, "chunked bodies are not accepted; send Content-Length")
         if method in ("POST", "PUT", "PATCH"):
             raw = headers.get(b"content-length")
             if raw is None or not raw.isdigit():
                 return await _reject(send, 411, "Content-Length required")
-            if int(raw) > (MAX_UPLOAD_BYTES if path in UPLOAD_PATHS else MAX_JSON_BYTES):
+            limit = MAX_UPLOAD_BYTES if path in UPLOAD_PATHS else MAX_JSON_BYTES
+            if int(raw) > limit:
                 return await _reject(send, 413, "request body too large")
+            # Spooled: JSON bodies stay in memory, an image upload goes to a temporary file above 1 MiB.
+            with tempfile.SpooledTemporaryFile(max_size=SPOOL_BYTES) as body:
+                size, more = 0, True
+                while more:
+                    msg = await receive()
+                    if msg["type"] != "http.request":
+                        return  # the client went away
+                    chunk = msg.get("body", b"")
+                    size += len(chunk)
+                    if size > min(int(raw), limit):
+                        return await _reject(send, 413, "request body too large")
+                    body.write(chunk)
+                    more = msg.get("more_body", False)
+                body.seek(0)
+                if _json_type(headers) and _invalid_unicode(body.read()):
+                    return await _reject(send, 422, "text must be valid Unicode")
+                body.seek(0)
+                done = False
+
+                async def replay():
+                    nonlocal done
+                    if done:
+                        return await receive()
+                    chunk = body.read(REPLAY_CHUNK)
+                    done = body.tell() >= size
+                    return {"type": "http.request", "body": chunk, "more_body": not done}
+                return await self.app(scope, replay, send)
         return await self.app(scope, receive, send)
+
+
+_SINGLE_HEADERS = (b"host", b"authorization", b"origin", b"content-type", b"content-length", b"transfer-encoding")
+_SURROGATE_ESCAPE = re.compile(rb"\\u[dD][89a-fA-F][0-9a-fA-F]{2}")
+
+
+def _json_type(headers: dict[bytes, bytes]) -> bool:
+    ctype = headers.get(b"content-type", b"").split(b";")[0].strip().lower()
+    return ctype == b"application/json" or ctype.endswith(b"+json")
+
+
+def _invalid_unicode(body: bytes) -> bool:
+    """JSON text must be UTF-8, and JSON can still encode a lone surrogate (\\ud800) that no UTF-8 store or
+    response can hold (ENV-6). Both are refused before parsing."""
+    try:
+        body.decode("utf-8")  # strict: also refuses raw surrogate bytes, which json.loads would let through
+    except UnicodeDecodeError:
+        return True
+    if not _SURROGATE_ESCAPE.search(body):
+        return False
+    try:
+        json.dumps(json.loads(body), ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    except ValueError:
+        return False  # not JSON: the route reports that
+    return False
 
 
 async def _reject(send, status: int, detail: str) -> None:
@@ -260,9 +362,11 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
         stream_task = asyncio.create_task(streams.run(stop)) if streams else None
         yield
         stop.set()
-        for t in (task, stream_task):
-            if t:
-                await t
+        running = {t for t in (task, stream_task) if t}
+        if running:  # a provider call can hang: shutdown waits a bounded time, then cancels (FLOW-11)
+            _, pending = await asyncio.wait(running, timeout=SHUTDOWN_WAIT_S)
+            for t in pending:
+                t.cancel()
 
     # Interactive docs load third-party scripts, so they are opt-in (`serve --docs`).
     app = FastAPI(title="My AI Trading (local)", version=__version__, lifespan=lifespan,
@@ -275,7 +379,8 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
     app.add_middleware(RequestGuard, allowed_hosts=allowed_hosts, token=token, extension_id=extension_id)
     app.add_middleware(CORSMiddleware, allow_origin_regex=EXTENSION_ORIGIN_RE,
                        allow_methods=["GET", "POST", "PUT", "DELETE"],
-                       allow_headers=["Authorization", "Content-Type"], allow_credentials=False)
+                       allow_headers=["Authorization", "Content-Type", "If-Match"], expose_headers=["ETag"],
+                       allow_credentials=False)
 
     def auth(authorization: str = Header(default="")) -> None:
         supplied = authorization.removeprefix("Bearer ").strip()
@@ -315,6 +420,12 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
 
     A = [Depends(auth)]
     L = [Depends(auth), Depends(limited)]
+
+    @app.exception_handler(BacktestBusyError)
+    @app.exception_handler(CopilotBusyError)
+    async def busy(_request: Request, exc: Exception) -> JSONResponse:
+        # Bounded concurrency (PERF-1, PERF-2): fail fast instead of queueing work behind a stalled API.
+        return JSONResponse({"detail": str(exc)}, status_code=429, headers={"Retry-After": "2"})
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -390,16 +501,29 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
         return saved
 
     @app.get("/api/v1/settings", dependencies=A)
-    def get_settings() -> dict[str, Any]:
+    def get_settings(response: Response) -> dict[str, Any]:
+        response.headers["ETag"] = store.settings_etag()
         return store.settings().model_dump()
 
     @app.put("/api/v1/settings", dependencies=A)
-    def put_settings(body: dict[str, Any]) -> dict[str, Any]:
+    def put_settings(body: dict[str, Any], response: Response,
+                     if_match: str | None = Header(default=None)) -> dict[str, Any]:
+        if if_match is None:  # every save is compare-and-set, so a stale tab can never overwrite newer settings
+            raise HTTPException(428, "settings saves need If-Match with the ETag from GET /api/v1/settings")
         try:
             s = UserSettings.model_validate(body)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        store.save_settings(s)
+        except ValidationError as exc:  # never echo submitted values or unknown key names (audit SEC-6)
+            raise HTTPException(422, [{"type": e.get("type"),
+                                       "loc": [p if isinstance(p, int) or p in SETTINGS_FIELDS else "<field>"
+                                               for p in e.get("loc", ())],
+                                       "msg": "invalid value" if e.get("type") == "value_error" else e.get("msg")}
+                                      for e in exc.errors()]) from None
+        except ValueError:
+            raise HTTPException(422, "invalid settings") from None
+        try:
+            response.headers["ETag"] = store.save_settings(s, if_match=if_match)
+        except SettingsConflict as exc:
+            raise HTTPException(412, str(exc)) from None
         return s.model_dump()
 
     @app.post("/api/v1/strategies/compile", dependencies=L)

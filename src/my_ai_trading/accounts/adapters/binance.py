@@ -328,7 +328,8 @@ class Binance(ExchangeAdapter):
             raise
         return self._order(data, market)
 
-    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str) -> Order:
+    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str,
+                     exchange_order_id: str | None = None) -> Order:
         self._require_testnet()
         data = self._signed(cred, "DELETE", market, PATHS[market]["order"],
                             {"symbol": symbol, "origClientOrderId": client_order_id}, order_write=True)

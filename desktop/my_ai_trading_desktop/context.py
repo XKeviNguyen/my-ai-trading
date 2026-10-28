@@ -8,7 +8,9 @@ from typing import Any
 from PySide6.QtCore import QObject, QSettings, Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
-from .client import DEFAULT_PORT, ApiClient, ApiError, UnauthorizedError, read_token_file, token_path
+from .client import (
+    DEFAULT_PORT, ApiClient, ApiError, PreconditionFailedError, UnauthorizedError, read_token_file, token_path,
+)
 from .widgets import confirm, plain_label, status_label
 from .worker import TaskRunner
 
@@ -21,10 +23,6 @@ class TokenSource:
 
     def set_pasted(self, token: str | None) -> None:
         self._pasted = token or None
-
-    @property
-    def has_pasted(self) -> bool:
-        return self._pasted is not None
 
     def __call__(self) -> str | None:
         return self._pasted or read_token_file()
@@ -55,6 +53,7 @@ class AppContext(QObject):
         self.market = "usdm_perpetual"
         self.analysis_tf = "1h"
         self.settings_cache: dict[str, Any] | None = None
+        self.settings_etag: str | None = None  # version tag of settings_cache; saves send it as If-Match
         self.profiles_cache: list[dict[str, Any]] | None = None
         self.select_tab: Callable[[str], None] = lambda _name: None
         # Replaceable in tests so no modal dialog blocks the event loop.
@@ -79,19 +78,43 @@ class AppContext(QObject):
             on_err: Callable[[ApiError], None] | None = None) -> int:
         return self.runner.run(fn, on_ok, on_err)
 
-    def update_settings_async(self, mutate: Callable[[dict[str, Any]], None], on_ok: Callable[[dict], None],
-                              on_err: Callable[[ApiError], None]) -> None:
-        """GET current settings in the worker, mutate a copy, PUT the full object back."""
-        def job() -> dict[str, Any]:
-            current = copy.deepcopy(self.client.get_settings())
-            mutate(current)
-            return self.client.put_settings(current)
+    def load_settings_async(self, on_ok: Callable[[dict], None], on_err: Callable[[ApiError], None]) -> None:
+        """GET the settings and their version tag; both are cached for the next save."""
+        def done(res: tuple[dict[str, Any], str | None]) -> None:
+            self.settings_cache, self.settings_etag = res
+            on_ok(res[0])
+        self.run(self.client.get_settings_versioned, done, on_err)
 
-        def done(saved: dict[str, Any]) -> None:
-            self.settings_cache = saved
+    def update_settings_async(self, mutate: Callable[[dict[str, Any]], None], on_ok: Callable[[dict], None],
+                              on_err: Callable[[ApiError], None], *, base_etag: str | None = None) -> None:
+        """GET current settings in the worker, mutate a copy, PUT the full object back with If-Match (`base_etag`
+        when a form shows settings loaded earlier, else the tag of that GET). On 412 nothing is saved and nothing
+        is retried: the latest settings are reloaded into the cache, then `on_err` gets the conflict."""
+        def job() -> tuple[dict[str, Any], str | None]:
+            current, etag = self.client.get_settings_versioned()
+            current = copy.deepcopy(current)
+            mutate(current)
+            try:
+                return self.client.put_settings_versioned(current, if_match=base_etag or etag)
+            except PreconditionFailedError as exc:
+                try:
+                    exc.latest = self.client.get_settings_versioned()  # type: ignore[attr-defined]
+                except ApiError:
+                    pass
+                raise
+
+        def done(res: tuple[dict[str, Any], str | None]) -> None:
+            self.settings_cache, self.settings_etag = res
             self.settings_changed.emit()
-            on_ok(saved)
-        self.run(job, done, on_err)
+            on_ok(res[0])
+
+        def failed(e: ApiError) -> None:
+            latest = getattr(e, "latest", None)
+            if latest is not None:
+                self.settings_cache, self.settings_etag = latest
+                self.settings_changed.emit()
+            on_err(e)
+        self.run(job, done, failed)
 
     # ---- errors ----
     def error_widget(self, err: ApiError | Exception) -> QWidget:

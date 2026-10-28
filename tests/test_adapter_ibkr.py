@@ -223,3 +223,15 @@ def test_credential_fields_are_validated_before_any_request():
     with pytest.raises(AuthError, match="account number"):
         a.snapshot(Credential(Secret("../../evil"), Secret("paperuser1234")), "c1")
     assert rec.calls == []
+
+
+def test_an_order_from_an_earlier_gateway_session_is_cancelled_by_its_stored_id():
+    from my_ai_trading.accounts.adapters.base import OutcomeUnknown
+    a, rec = adapter({("GET", P + "/iserver/account/orders"): ok({"orders": []}),  # new session: not listed
+                      ("DELETE", P + f"/iserver/account/{ACCT}/order/1370093239"):
+                      ok({"msg": "Request was submitted", "order_id": 1370093239, "conid": 265598, "account": ACCT})})
+    with pytest.raises(OutcomeUnknown, match="accepted the cancel request"):  # re-audit N4: was "cannot be cancelled"
+        a.cancel_order(CRED, "AAPL", "stock", client_order_id="mat0123456789abcdef", exchange_order_id="1370093239")
+    assert any(c[0] == "DELETE" and c[2].endswith("/order/1370093239") for c in rec.calls)
+    with pytest.raises(I.ExchangeError, match="does not list"):
+        a.cancel_order(CRED, "AAPL", "stock", client_order_id="mat0123456789abcdef")

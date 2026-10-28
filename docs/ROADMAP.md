@@ -54,6 +54,18 @@
 - Monitor false positives, drawdown, calibration and reproducibility; reject strategies overfit to sample history.
 - Exit gate: independent review of evidence; do not present backtest results as guaranteed future returns.
 
+## R7 — Optional local/fine-tuned AI
+- PyTorch + Transformers + PEFT/LoRA/QLoRA pilots, and a self-host vs API comparison (PRD §8).
+- Only with real datasets, evaluation goals, hardware, licenses and an approved budget (PRD §5).
+- Exit gate: better validated quality or unit economics, with an acceptable security and operations footprint.
+- **Status:** not started. None of these libraries is a project dependency.
+
+## R8 — Exchange accounts + testnet trading
+- Normalized adapters for Binance, Bybit and OKX, plus Interactive Brokers paper if feasible. Read-only account sync, portfolio and trade analytics, and the credential lifecycle in the OS vault with expiry.
+- Testnet-only Trading Mode: preview → per-order confirmation → journal → send → reconcile. Boundary in `AGENTS.md` §2.
+- Exit gate (PRD §8): live keys with trade or withdrawal rights are rejected; expired credentials are never used; no order without a per-order confirmation; unknown order states are reconciled, never blindly retried; OAuth flows stay marked BLOCKED BY PROVIDER APPROVAL until approved.
+- **Status:** built and tested offline; not yet run against real exchange testnets. Details and limitations in [`ACCOUNTS_TRADING.md`](ACCOUNTS_TRADING.md); open findings in the latest audit under [`audits/`](audits/).
+
 ## Acceptance scenarios G–L → milestone gates
 
 Full text in PRD §9. Each becomes an offline, fixture-based test before the milestone exits.
@@ -67,7 +79,7 @@ Full text in PRD §9. Each becomes an offline, fixture-based test before the mil
 | **K** — three profiles with different horizons/data | Per-framework applicability and evidence; no `2 BUY vs 1 SELL` vote or unsupported consensus | R3 (deterministic), R4 (copilot) |
 | **L** — session stocks, 24/7 crypto, open/closed bars | Correct calendar per source; 30 weekly ≠ 30 hourly bars; no new weekly signal per hourly event | R2 (cadence), R3 (labels) |
 
-## Open decisions (not implementation blockers for R1)
+## Open decisions
 - Preferred client (Chrome extension vs native), exact market data rights, commercial licensing, user auth/billing, AI vendors.
 - GPU self-host/LoRA only after economics and quality justify; initial MVP local-first with zero-AI-token fast engine.
 - Later asset classes (US/JP equities, commodities), deeper macro/fundamental integrations, optional paper trading.

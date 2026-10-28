@@ -85,7 +85,7 @@ class SimExchange(ExchangeAdapter):
     def query_order(self, cred, symbol, market, *, client_order_id):
         return SimExchange.book.get(client_order_id)
 
-    def cancel_order(self, cred, symbol, market, *, client_order_id):
+    def cancel_order(self, cred, symbol, market, *, client_order_id, exchange_order_id=None):
         o = SimExchange.book[client_order_id].model_copy(update={"status": OrderStatus.CANCELED})
         SimExchange.book[client_order_id] = o
         return o
@@ -249,7 +249,8 @@ def test_a_definite_rejection_is_journaled_and_reported(world):
     assert store.journal("local")[0]["state"] == "REJECTED"
 
 
-def test_an_order_left_sending_by_a_crash_is_flagged_and_only_given_up_after_repeated_lookups(world):
+def test_an_order_left_sending_by_a_crash_stays_open_until_the_user_resolves_it(world):
+    # Audit FLOW-1/2 (concern C): repeated empty lookups are never proof the order was not executed.
     _, trading, store, connect, *_ = world
     cid = connect()
     coid = "mat" + "0" * 16
@@ -257,7 +258,11 @@ def test_an_order_left_sending_by_a_crash_is_flagged_and_only_given_up_after_rep
                           "environment": "testnet", "state": "SENDING", "created_at": 1,  # long ago
                           "request_json": '{"symbol": "BTCUSDT", "market": "spot"}'})
     assert [r["client_order_id"] for r in trading.needs_reconcile(user="local")] == [coid]
-    assert [trading.reconcile(coid, user="local")["state"] for _ in range(3)] == ["UNKNOWN", "UNKNOWN", "NOT_FOUND"]
+    results = [trading.reconcile(coid, user="local") for _ in range(5)]
+    assert [r["state"] for r in results] == ["SENDING"] * 5 and all(r["verification"] == "not_listed" for r in results)
+    assert all("place a new order" not in r["note"] and "Do not place it again" in r["note"] for r in results)
+    assert [r["client_order_id"] for r in trading.needs_reconcile(user="local")] == [coid]  # still tracked
+    assert trading.resolve(coid, user="local")["state"] == "USER_RESOLVED"  # only by explicit user action
     assert trading.needs_reconcile(user="local") == []
 
 
@@ -405,3 +410,15 @@ def test_a_stale_status_never_overwrites_a_final_state_even_when_interleaved(wor
     assert store.journal("local")[0]["state"] == "CANCELED"
     assert store.journal_update(coid, state="NEW") == "CANCELED"  # the guard lives in the SQL itself
     assert store.journal_update(coid, state="FILLED") == "FILLED"  # final -> final (exchange truth) is allowed
+
+
+def test_a_rule_breaking_preview_makes_no_signed_calls(world, monkeypatch):
+    _, trading, _, connect, *_ = world
+    cid = connect()
+    enable(trading, cid)
+    signed = []
+    for name in ("fee_rates", "leverage", "snapshot"):
+        monkeypatch.setattr(SimExchange, name, lambda self, *a, n=name: signed.append(n))
+    with pytest.raises(TradingRefused, match="minimum 5"):
+        trading.preview(cid, DRAFT.model_copy(update={"quantity": Decimal("0.01")}), user="local")
+    assert signed == []  # SIMP-2: fees, leverage and the account snapshot were fetched before refusing

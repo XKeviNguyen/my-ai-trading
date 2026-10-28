@@ -334,6 +334,20 @@
     "title": "Body_vision_api_v1_copilot_vision_post",
     "type": "object"
    },
+   "CancelRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "confirm": {
+      "title": "Confirm",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "confirm"
+    ],
+    "title": "CancelRequest",
+    "type": "object"
+   },
    "ChallengeRequest": {
     "additionalProperties": false,
     "properties": {
@@ -466,6 +480,64 @@
     "title": "CompileRequest",
     "type": "object"
    },
+   "ConnectRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "api_key": {
+      "maxLength": 512,
+      "minLength": 3,
+      "pattern": "^[!-~]+$",
+      "title": "Api Key",
+      "type": "string"
+     },
+     "api_secret": {
+      "maxLength": 4096,
+      "minLength": 3,
+      "pattern": "^[!-~]+$",
+      "title": "Api Secret",
+      "type": "string"
+     },
+     "environment": {
+      "$ref": "#/components/schemas/Environment"
+     },
+     "exchange": {
+      "pattern": "^[a-z0-9_]{2,20}$",
+      "title": "Exchange",
+      "type": "string"
+     },
+     "label": {
+      "default": "",
+      "maxLength": 60,
+      "title": "Label",
+      "type": "string"
+     },
+     "lifetime": {
+      "$ref": "#/components/schemas/Lifetime",
+      "default": "session"
+     },
+     "passphrase": {
+      "anyOf": [
+       {
+        "maxLength": 256,
+        "pattern": "^[!-~]+$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Passphrase"
+     }
+    },
+    "required": [
+     "exchange",
+     "environment",
+     "api_key",
+     "api_secret"
+    ],
+    "title": "ConnectRequest",
+    "type": "object"
+   },
    "DryRunRequest": {
     "additionalProperties": false,
     "properties": {
@@ -501,6 +573,14 @@
     "title": "DryRunRequest",
     "type": "object"
    },
+   "Environment": {
+    "enum": [
+     "live",
+     "testnet"
+    ],
+    "title": "Environment",
+    "type": "string"
+   },
    "HTTPValidationError": {
     "properties": {
      "detail": {
@@ -513,6 +593,18 @@
     },
     "title": "HTTPValidationError",
     "type": "object"
+   },
+   "Lifetime": {
+    "enum": [
+     "session",
+     "1h",
+     "24h",
+     "7d",
+     "30d",
+     "until_removed"
+    ],
+    "title": "Lifetime",
+    "type": "string"
    },
    "MetricRef": {
     "additionalProperties": false,
@@ -539,7 +631,11 @@
        "prior_high",
        "prior_low",
        "atr_wilder",
-       "rsi_wilder"
+       "rsi_wilder",
+       "adx",
+       "bollinger_percent_b",
+       "macd_line",
+       "macd_histogram"
       ],
       "title": "Name",
       "type": "string"
@@ -572,7 +668,8 @@
        "12h",
        "1d",
        "3d",
-       "1w"
+       "1w",
+       "1M"
       ],
       "title": "Timeframe",
       "type": "string"
@@ -583,6 +680,38 @@
      "timeframe"
     ],
     "title": "MetricRef",
+    "type": "object"
+   },
+   "ModeRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "connection_id": {
+      "pattern": "^[0-9a-f]{16}$",
+      "title": "Connection Id",
+      "type": "string"
+     },
+     "consent": {
+      "anyOf": [
+       {
+        "maxLength": 600,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Consent"
+     },
+     "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "connection_id",
+     "enabled"
+    ],
+    "title": "ModeRequest",
     "type": "object"
    },
    "Not": {
@@ -629,6 +758,154 @@
      "item"
     ],
     "title": "Not",
+    "type": "object"
+   },
+   "OrderDraft": {
+    "additionalProperties": false,
+    "description": "What a user (or an AI-written draft) asks for. Never executable by itself.",
+    "properties": {
+     "market": {
+      "enum": [
+       "spot",
+       "usdm_perpetual",
+       "stock"
+      ],
+      "title": "Market",
+      "type": "string"
+     },
+     "price": {
+      "anyOf": [
+       {
+        "exclusiveMinimum": 0.0,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Price"
+     },
+     "quantity": {
+      "anyOf": [
+       {
+        "exclusiveMinimum": 0.0,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "title": "Quantity"
+     },
+     "reduce_only": {
+      "default": false,
+      "title": "Reduce Only",
+      "type": "boolean"
+     },
+     "side": {
+      "enum": [
+       "buy",
+       "sell"
+      ],
+      "title": "Side",
+      "type": "string"
+     },
+     "symbol": {
+      "pattern": "^[A-Z0-9][A-Z0-9.]{0,29}$",
+      "title": "Symbol",
+      "type": "string"
+     },
+     "time_in_force": {
+      "anyOf": [
+       {
+        "enum": [
+         "GTC",
+         "IOC",
+         "FOK"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Time In Force"
+     },
+     "type": {
+      "enum": [
+       "market",
+       "limit"
+      ],
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "symbol",
+     "market",
+     "side",
+     "type",
+     "quantity"
+    ],
+    "title": "OrderDraft",
+    "type": "object"
+   },
+   "PreviewRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "connection_id": {
+      "pattern": "^[0-9a-f]{16}$",
+      "title": "Connection Id",
+      "type": "string"
+     },
+     "draft": {
+      "$ref": "#/components/schemas/OrderDraft"
+     }
+    },
+    "required": [
+     "connection_id",
+     "draft"
+    ],
+    "title": "PreviewRequest",
+    "type": "object"
+   },
+   "ReportRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "analysis_timeframe": {
+      "anyOf": [
+       {
+        "maxLength": 4,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Analysis Timeframe"
+     },
+     "market": {
+      "default": "usdm_perpetual",
+      "enum": [
+       "usdm_perpetual",
+       "spot"
+      ],
+      "title": "Market",
+      "type": "string"
+     },
+     "symbol": {
+      "pattern": "^[A-Z0-9]{3,20}$",
+      "title": "Symbol",
+      "type": "string"
+     }
+    },
+    "required": [
+     "symbol"
+    ],
+    "title": "ReportRequest",
     "type": "object"
    },
    "RuleBody": {
@@ -762,7 +1039,8 @@
        "12h",
        "1d",
        "3d",
-       "1w"
+       "1w",
+       "1M"
       ],
       "title": "Trigger Timeframe",
       "type": "string"
@@ -774,6 +1052,28 @@
      "condition"
     ],
     "title": "StrategyRule",
+    "type": "object"
+   },
+   "SubmitRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "confirm_token": {
+      "maxLength": 64,
+      "minLength": 20,
+      "title": "Confirm Token",
+      "type": "string"
+     },
+     "preview_id": {
+      "pattern": "^[0-9a-f]{16}$",
+      "title": "Preview Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "preview_id",
+     "confirm_token"
+    ],
+    "title": "SubmitRequest",
     "type": "object"
    },
    "Trend": {
@@ -809,7 +1109,8 @@
        "12h",
        "1d",
        "3d",
-       "1w"
+       "1w",
+       "1M"
       ],
       "title": "Timeframe",
       "type": "string"
@@ -870,6 +1171,661 @@
  },
  "openapi": "3.1.0",
  "paths": {
+  "/api/v1/accounts/cache/clear": {
+   "post": {
+    "operationId": "clear_cache_api_v1_accounts_cache_clear_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Clear Cache Api V1 Accounts Cache Clear Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Clear Cache"
+   }
+  },
+  "/api/v1/accounts/connections": {
+   "get": {
+    "operationId": "connections_api_v1_accounts_connections_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Connections Api V1 Accounts Connections Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Connections"
+   },
+   "post": {
+    "operationId": "connect_api_v1_accounts_connections_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ConnectRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Connect Api V1 Accounts Connections Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Connect"
+   }
+  },
+  "/api/v1/accounts/connections/{cid}": {
+   "delete": {
+    "operationId": "disconnect_api_v1_accounts_connections__cid__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "cid",
+      "required": true,
+      "schema": {
+       "pattern": "^[0-9a-f]{16}$",
+       "title": "Cid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Disconnect Api V1 Accounts Connections  Cid  Delete",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Disconnect"
+   }
+  },
+  "/api/v1/accounts/connections/{cid}/cashflows": {
+   "get": {
+    "operationId": "cashflows_api_v1_accounts_connections__cid__cashflows_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "cid",
+      "required": true,
+      "schema": {
+       "pattern": "^[0-9a-f]{16}$",
+       "title": "Cid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Cashflows"
+   }
+  },
+  "/api/v1/accounts/connections/{cid}/fills": {
+   "get": {
+    "operationId": "fills_api_v1_accounts_connections__cid__fills_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "cid",
+      "required": true,
+      "schema": {
+       "pattern": "^[0-9a-f]{16}$",
+       "title": "Cid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "symbol",
+      "required": true,
+      "schema": {
+       "pattern": "^[A-Z0-9][A-Z0-9.]{0,29}$",
+       "title": "Symbol",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "market",
+      "required": false,
+      "schema": {
+       "default": "spot",
+       "enum": [
+        "spot",
+        "usdm_perpetual",
+        "stock"
+       ],
+       "title": "Market",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Fills"
+   }
+  },
+  "/api/v1/accounts/connections/{cid}/orders": {
+   "get": {
+    "operationId": "orders_api_v1_accounts_connections__cid__orders_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "cid",
+      "required": true,
+      "schema": {
+       "pattern": "^[0-9a-f]{16}$",
+       "title": "Cid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "symbol",
+      "required": true,
+      "schema": {
+       "pattern": "^[A-Z0-9][A-Z0-9.]{0,29}$",
+       "title": "Symbol",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "market",
+      "required": false,
+      "schema": {
+       "default": "spot",
+       "enum": [
+        "spot",
+        "usdm_perpetual",
+        "stock"
+       ],
+       "title": "Market",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Orders"
+   }
+  },
+  "/api/v1/accounts/connections/{cid}/performance": {
+   "get": {
+    "operationId": "performance_api_v1_accounts_connections__cid__performance_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "cid",
+      "required": true,
+      "schema": {
+       "pattern": "^[0-9a-f]{16}$",
+       "title": "Cid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "symbol",
+      "required": true,
+      "schema": {
+       "pattern": "^[A-Z0-9][A-Z0-9.]{0,29}$",
+       "title": "Symbol",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "market",
+      "required": false,
+      "schema": {
+       "default": "spot",
+       "enum": [
+        "spot",
+        "usdm_perpetual",
+        "stock"
+       ],
+       "title": "Market",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Performance Api V1 Accounts Connections  Cid  Performance Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Performance"
+   }
+  },
+  "/api/v1/accounts/connections/{cid}/snapshot": {
+   "get": {
+    "operationId": "snapshot_api_v1_accounts_connections__cid__snapshot_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "cid",
+      "required": true,
+      "schema": {
+       "pattern": "^[0-9a-f]{16}$",
+       "title": "Cid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "fresh",
+      "required": false,
+      "schema": {
+       "default": false,
+       "title": "Fresh",
+       "type": "boolean"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Snapshot Api V1 Accounts Connections  Cid  Snapshot Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Snapshot"
+   }
+  },
+  "/api/v1/accounts/exchanges": {
+   "get": {
+    "operationId": "exchanges_api_v1_accounts_exchanges_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Exchanges Api V1 Accounts Exchanges Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Exchanges"
+   }
+  },
+  "/api/v1/accounts/portfolio": {
+   "get": {
+    "operationId": "portfolio_api_v1_accounts_portfolio_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "environment",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/Environment"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Environment"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Portfolio Api V1 Accounts Portfolio Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Portfolio"
+   }
+  },
   "/api/v1/alerts": {
    "get": {
     "operationId": "alerts_api_v1_alerts_get",
@@ -1343,6 +2299,160 @@
     "summary": "Monitor Status"
    }
   },
+  "/api/v1/reports": {
+   "get": {
+    "operationId": "list_reports_api_v1_reports_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response List Reports Api V1 Reports Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Reports"
+   },
+   "post": {
+    "operationId": "save_report_api_v1_reports_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ReportRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Save Report Api V1 Reports Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Save Report"
+   }
+  },
+  "/api/v1/reports/{rid}": {
+   "get": {
+    "operationId": "get_report_api_v1_reports__rid__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "rid",
+      "required": true,
+      "schema": {
+       "pattern": "^[0-9a-f]{12}$",
+       "title": "Rid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "format",
+      "required": false,
+      "schema": {
+       "default": "json",
+       "enum": [
+        "json",
+        "markdown"
+       ],
+       "title": "Format",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Report"
+   }
+  },
   "/api/v1/settings": {
    "get": {
     "operationId": "get_settings_api_v1_settings_get",
@@ -1387,6 +2497,22 @@
    "put": {
     "operationId": "put_settings_api_v1_settings_put",
     "parameters": [
+     {
+      "in": "header",
+      "name": "if-match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "If-Match"
+      }
+     },
      {
       "in": "header",
       "name": "authorization",
@@ -1896,6 +3022,433 @@
      }
     },
     "summary": "Approve"
+   }
+  },
+  "/api/v1/trading/consent": {
+   "get": {
+    "operationId": "consent_api_v1_trading_consent_get",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Consent Api V1 Trading Consent Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Consent"
+   }
+  },
+  "/api/v1/trading/mode": {
+   "put": {
+    "operationId": "mode_api_v1_trading_mode_put",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ModeRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Mode Api V1 Trading Mode Put",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Mode"
+   }
+  },
+  "/api/v1/trading/orders": {
+   "get": {
+    "operationId": "journal_api_v1_trading_orders_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 100,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Journal Api V1 Trading Orders Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Journal"
+   },
+   "post": {
+    "operationId": "submit_api_v1_trading_orders_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SubmitRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Submit Api V1 Trading Orders Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Submit"
+   }
+  },
+  "/api/v1/trading/orders/{coid}/cancel": {
+   "post": {
+    "operationId": "cancel_api_v1_trading_orders__coid__cancel_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "coid",
+      "required": true,
+      "schema": {
+       "pattern": "^mat[0-9a-f]{16}$",
+       "title": "Coid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CancelRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Cancel Api V1 Trading Orders  Coid  Cancel Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Cancel"
+   }
+  },
+  "/api/v1/trading/orders/{coid}/reconcile": {
+   "post": {
+    "operationId": "reconcile_api_v1_trading_orders__coid__reconcile_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "coid",
+      "required": true,
+      "schema": {
+       "pattern": "^mat[0-9a-f]{16}$",
+       "title": "Coid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Reconcile Api V1 Trading Orders  Coid  Reconcile Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Reconcile"
+   }
+  },
+  "/api/v1/trading/orders/{coid}/resolve": {
+   "post": {
+    "description": "For an order the exchange never acknowledged: the user checked the exchange and stops tracking it.",
+    "operationId": "resolve_api_v1_trading_orders__coid__resolve_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "coid",
+      "required": true,
+      "schema": {
+       "pattern": "^mat[0-9a-f]{16}$",
+       "title": "Coid",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CancelRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Resolve Api V1 Trading Orders  Coid  Resolve Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Resolve"
+   }
+  },
+  "/api/v1/trading/preview": {
+   "post": {
+    "operationId": "preview_api_v1_trading_preview_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PreviewRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Preview Api V1 Trading Preview Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Preview"
    }
   },
   "/api/v1/usage": {

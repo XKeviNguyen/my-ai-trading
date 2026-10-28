@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import json
 import re
+import http.client
+import socket
+from http.client import HTTPException
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPHandler, HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from ..domain import Candle, InstrumentIdentity, MarketType, Timeframe
 
@@ -35,7 +38,50 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-_OPENER = build_opener(_NoRedirect)
+# Each fetch registers its sockets here, so a watchdog can cut a server that drips bytes past the deadline (ENV-13).
+_SOCKETS = threading.local()
+
+
+def _track(sock: socket.socket) -> None:
+    box = getattr(_SOCKETS, "box", None)
+    if box is not None:
+        box[0].append(sock)
+        if box[1].is_set():  # connected after the deadline passed (e.g. slow DNS): cut it now
+            _cut(box[0], box[1])
+
+
+class _TrackedHTTP(http.client.HTTPConnection):
+    def connect(self) -> None:
+        super().connect()
+        _track(self.sock)
+
+
+class _TrackedHTTPS(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        super().connect()
+        _track(self.sock)
+
+
+class _TrackedHTTPHandler(HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_TrackedHTTP, req)
+
+
+class _TrackedHTTPSHandler(HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_TrackedHTTPS, req, context=self._context)
+
+
+_OPENER = build_opener(_NoRedirect, _TrackedHTTPHandler(), _TrackedHTTPSHandler())
+
+
+def _cut(box: list[socket.socket], fired: threading.Event) -> None:
+    fired.set()
+    for s in box:
+        try:
+            s.shutdown(socket.SHUT_RDWR)  # wakes a blocked read in the fetching thread
+        except OSError:
+            pass
 
 
 class MarketDataError(Exception):
@@ -65,16 +111,32 @@ Fetcher = Callable[[str, float, int], HttpResult]
 
 
 def urllib_fetch(url: str, deadline_s: float, max_bytes: int) -> HttpResult:
-    """GET with a *total* deadline and a hard size cap."""
+    """GET with a *total* deadline (headers and body, enforced by a watchdog) and a hard size cap."""
     start = time.monotonic()
     req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    box: list[socket.socket] = []
+    fired = threading.Event()
+    watchdog = threading.Timer(deadline_s, _cut, (box, fired))
+    watchdog.daemon = True
+    _SOCKETS.box = (box, fired)
+    watchdog.start()
+    try:
+        return _fetch_once(req, start, deadline_s, max_bytes, fired)
+    finally:
+        watchdog.cancel()
+        _SOCKETS.box = None
+
+
+def _fetch_once(req: Request, start: float, deadline_s: float, max_bytes: int, fired: threading.Event) -> HttpResult:
     try:
         with _OPENER.open(req, timeout=min(deadline_s, 5.0)) as resp:
             chunks, size = [], 0
             while True:
                 if time.monotonic() - start > deadline_s:
                     raise MarketDataError("Provider response exceeded deadline")
-                chunk = resp.read(65_536)
+                chunk = resp.read1(65_536)  # returns after each receive, so the deadline check runs between them
+                if fired.is_set():
+                    raise MarketDataError("Provider response exceeded deadline")
                 if not chunk:
                     break
                 size += len(chunk)
@@ -84,8 +146,13 @@ def urllib_fetch(url: str, deadline_s: float, max_bytes: int) -> HttpResult:
             return HttpResult(resp.status, b"".join(chunks), {k.lower(): v for k, v in resp.headers.items()})
     except HTTPError as exc:
         return HttpResult(exc.code, b"", {k.lower(): v for k, v in (exc.headers or {}).items()})
-    except (URLError, TimeoutError, OSError) as exc:
-        raise MarketDataError("Network error contacting market data provider") from exc
+    except (URLError, TimeoutError, OSError, HTTPException) as exc:
+        if fired.is_set():
+            raise MarketDataError("Provider response exceeded deadline") from exc
+        if not isinstance(exc, HTTPException):
+            raise MarketDataError("Network error contacting market data provider") from exc
+        # BadStatusLine, LineTooLong, IncompleteRead: e.g. a captive portal (ENV-2)
+        raise MarketDataError("Malformed HTTP response from market data provider") from exc
 
 
 class BinancePublic:

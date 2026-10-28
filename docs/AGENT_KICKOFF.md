@@ -1,5 +1,7 @@
 # 📋 First Local Coding Session — copy into Codex or Claude Code
 
+> **Historical (R1, done).** This was the kickoff prompt for the first session, when the repository was documentation-only and the V0.1 ZIP lived outside Git. The engine, extension and desktop app are now in the repository, and R8 allows read-only live keys and testnet-only Trading Mode (`AGENTS.md` §2). Use `docs/PROGRESS.md` and the latest audit in `docs/audits/` for the current state. The safety rules below still apply where they do not conflict with `AGENTS.md`.
+
 > Paste the block below into an agent inside VS Code after cloning the private repository and importing the starter docs. Supply the local path to the V0.1 ZIP separately. **Do not give real Binance trading keys or production credentials.**
 
 ---

@@ -86,6 +86,7 @@ class Position(_Record):
     liquidation_price: Decimal | None = None
     unrealized_pnl: Decimal | None = None
     notional: Decimal | None = None
+    currency: str | None = None  # None: the account's USD-like quote; others are not converted (DATA-6)
     provenance: Provenance = Provenance.EXCHANGE_REPORTED
 
 

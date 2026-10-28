@@ -23,6 +23,15 @@ def repo_root() -> Path:
     return Path(env) if env else Path(__file__).resolve().parents[2]
 
 
+def pytest_configure(config):
+    """The core suite's network guard: desktop tests may reach only the loopback engine."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("core_network_guard", repo_root() / "tests" / "conftest.py")
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    guard.pytest_configure(config)
+
+
 @pytest.fixture(scope="session")
 def qapp():
     from PySide6.QtWidgets import QApplication

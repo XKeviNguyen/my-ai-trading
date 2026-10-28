@@ -82,7 +82,11 @@ class Timeframe:
 
     def is_aligned_open(self, open_ms: int) -> bool:
         if not self.is_calendar:
-            return True  # fixed intervals are checked by spacing
+            if self.code == "3d":  # shortcut: the exchange's 3-day anchor is unverified, so only whole UTC days
+                return open_ms % 86_400_000 == 0
+            # UTC-aligned bars; weekly bars open on Monday, 4 days after the Thursday epoch (DATA-7)
+            offset = 4 * 86_400_000 if self.code == "1w" else 0
+            return (open_ms - offset) % self.duration_ms == 0
         d = datetime.fromtimestamp(open_ms / 1000, tz=timezone.utc)
         return (d.day, d.hour, d.minute, d.second, d.microsecond) == (1, 0, 0, 0, 0)
 

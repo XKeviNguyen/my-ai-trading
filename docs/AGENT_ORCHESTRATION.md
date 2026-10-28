@@ -106,7 +106,7 @@ next_action: "lead to review exact diff before integration"
 
 ## 7. Suggested collaboration for this project
 
-- **R1 (now):** 1 implementer audits/imports V0.1; Security + Data reviewers may independently inspect ZIP/read-only, with separate evidence. Do not run strategy feature writers yet.
+- **R1 (done):** 1 implementer audited/imported V0.1; Security + Data reviewers may independently inspect ZIP/read-only, with separate evidence. Do not run strategy feature writers yet.
 - **R2:** if stable schemas are fixed, data ingestion and CLI/UX can be implemented in separate worktrees with exclusive files; Flow/Performance breakers inspect concurrently.
 - **R3/R4:** strategy compiler + AI router can be split only after contract types are frozen. Test prompt injection, untrusted model output, strict cost caps and cross-tenant cache separation before integration.
 - **R5+:** UI, market engine, data persistence and AI providers may be separate workstreams once independent contracts and CI gates exist.

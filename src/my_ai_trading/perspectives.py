@@ -32,7 +32,7 @@ def evaluate_perspectives(instrument: InstrumentIdentity, analysis_timeframe: st
                                 "implementation_maturity": profile.implementation_maturity,
                                 "limitations": list(profile.limitations)}
         if a.evaluate and a.evaluation_timeframe:
-            series = get_series(a.evaluation_timeframe)
+            series = get_series(a.evaluation_timeframe).up_to(as_of_ms)  # never bars after as_of (DATA-8)
             if series.is_stale(as_of_ms):
                 item["assessment"]["status"] = str(Applicability.STALE_DATA)
                 item["evaluation"] = {"state": "SKIPPED", "reason": "native-timeframe data is stale"}
@@ -45,7 +45,7 @@ def evaluate_perspectives(instrument: InstrumentIdentity, analysis_timeframe: st
             item["evaluation"] = {"state": "NOT_EVALUATED",
                                   "reason": a.reasons[-1] if a.reasons else str(a.status)}
         if mode is AnalysisMode.HYBRID and a.status is Applicability.SUPPORTED_HYBRID:
-            tactical = analyze(get_series(analysis_timeframe), as_of_ms=as_of_ms)
+            tactical = analyze(get_series(analysis_timeframe).up_to(as_of_ms), as_of_ms=as_of_ms)
             item["tactical_layer"] = {
                 "label": "Custom tactical timing — not part of the methodology",
                 "timeframe": analysis_timeframe, "status": tactical["status"],

@@ -382,7 +382,8 @@ class Bybit(ExchangeAdapter):
                 return self._order(rows[0], market)
         return None
 
-    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str) -> Order:
+    def cancel_order(self, cred: Credential, symbol: str, market: str, *, client_order_id: str,
+                     exchange_order_id: str | None = None) -> Order:
         self._require_testnet()
         self._signed(cred, "POST", "/v5/order/cancel",
                      {"category": CATEGORY[market], "symbol": symbol, "orderLinkId": client_order_id}, order_write=True)

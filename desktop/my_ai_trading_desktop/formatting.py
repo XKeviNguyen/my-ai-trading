@@ -485,6 +485,53 @@ def journal_summary(row: dict[str, Any]) -> str:
     return f"{g('side')} {g('quantity')} {g('symbol')} {g('type')}" + (f" @ {price}" if price and price != "None" else "")
 
 
+# ---- order journal (same rules and wording as extension/src/journal.ts) ----
+# Final states are never changed again. NOT_FOUND (older versions) is NOT final: its outcome is unsettled.
+FINAL_STATES = ("FILLED", "CANCELED", "REJECTED", "EXPIRED", "USER_RESOLVED")
+RESOLVABLE_STATES = ("SENDING", "UNKNOWN", "NOT_FOUND")
+NOT_LISTED_TEXT = "Exchange did not list this order at the last check — do not place it again."
+RESOLVE_CONFIRM_TEXT = "Mark this order resolved?"
+RESOLVE_CONFIRM_DETAIL = ("Only do this after you have checked this order in the exchange's order history (on the "
+                          "exchange's website or app). The app then stops tracking it. Nothing is sent to the "
+                          "exchange: this does not cancel anything there.")
+CANCEL_CONFIRM_TEXT = "Cancel this testnet order?"
+CANCEL_CONFIRM_DETAIL = "If its status is uncertain, the app asks the exchange to cancel it and then looks it up."
+
+
+def journal_can_cancel(row: dict[str, Any]) -> bool:
+    """Cancel lowers risk, so every unsettled order offers it (also UNKNOWN / NOT_FOUND / not listed)."""
+    return text(row.get("state"), "") not in FINAL_STATES
+
+
+def journal_can_resolve(row: dict[str, Any]) -> bool:
+    """Only for orders the exchange never acknowledged; acknowledged orders get their state from the exchange."""
+    return not row.get("acknowledged") and text(row.get("state"), "") in RESOLVABLE_STATES
+
+
+def journal_verification_lines(row: dict[str, Any]) -> list[str]:
+    """Plain-text lines describing the last exchange check of a journal row."""
+    out: list[str] = []
+    v = row.get("verification")
+    if v == "not_listed":
+        out.append(NOT_LISTED_TEXT)
+        out.append("The exchange confirmed this order before. Listings can lag or be purged: check your order history "
+                   "at the exchange." if row.get("acknowledged") else
+                   "Listings can lag, so this does not prove it never executed. Check the exchange's order history.")
+    elif v == "lookup_failed":
+        out.append("The last status check failed. Check again later; do not place it again.")
+    elif v == "confirmed":
+        out.append("Confirmed by the exchange at the last check.")
+    checked, seen = row.get("last_checked_at"), row.get("last_seen_at")
+    if checked:
+        out.append(f"Last checked: {fmt_ms(checked)}")
+    if checked or seen:
+        out.append(f"Last seen by the exchange: {fmt_ms(seen) if seen else 'never'}")
+    misses = row.get("lookups")
+    if isinstance(misses, int) and not isinstance(misses, bool) and misses > 0:
+        out.append(f"Not listed in {misses} spaced check{'' if misses == 1 else 's'}.")
+    return out
+
+
 def preview_title(order: Any) -> str:
     o = order if isinstance(order, dict) else {}
     price = o.get("price")

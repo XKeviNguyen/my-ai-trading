@@ -106,7 +106,7 @@ def test_evaluation_multi_timeframe_uses_closed_bars_and_reports_leaves():
     # Daily series must not extend beyond as_of: build it to end at as_of.
     d1 = CandleSeries(DEMO_INSTRUMENT, Timeframe("1d"),
                       tuple(candles_from_closes(uptrend_closes(400), "1d",
-                                                start_ms=as_of - 1 - 400 * 86_400_000 + 1)))
+                                                start_ms=as_of // 86_400_000 * 86_400_000 - 400 * 86_400_000)))
     r = evaluate(rule, _getter(**{"4h": h4, "1d": d1}), as_of_ms=as_of)
     assert r["result"] == "MATCH" and r["action"] == "ALERT", r
     assert len(r["leaves"]) == 3 and set(r["bar_close_times"]) == {"4h", "1d"}
@@ -194,3 +194,93 @@ def test_bare_macd_zero_test_uses_the_macd_line_not_the_histogram():
     assert metric_value(hist.left, tail) == pytest.approx(expected["histogram"])
     with pytest.raises(ValidationError):
         MetricRef(name="macd_line", period=12, timeframe="1d")
+
+
+# --- Six-breaker remediation: DATA-1 (meaning preservation), DATA-4, DATA-11, DATA-12 ---
+
+@pytest.mark.parametrize("prompt, expected", [
+    ("close is above SMA 10 on the 1 month chart", "CLOSE on 1M is above SMA(10) on 1M"),  # was 1-minute
+    ("close is above SMA 10 on the 1 week chart", "CLOSE on 1w is above SMA(10) on 1w"),
+    ("4 hours close is above sma 20", "CLOSE on 4h is above SMA(20) on 4h"),
+    ("closes above the prior 20-day high on the daily", "CLOSE on 1d is above PRIOR_HIGH(20) on 1d"),
+    ("today closes above SMA 50 on the 4h", None),            # "today" read as "day" and the 4h dropped
+    ("candle does not close above SMA 50 on 1h", None),       # negation dropped
+    ("price isn't above SMA 20 on 1h", None),
+    ("closes above the prior 20-day high on the 1h", None),   # 20 days is not 20 hourly bars
+    ("the 4h candle closes above SMA 50 on the 1h", None),    # two conflicting timeframes
+    ("close is above SMA 20 on the 7h", None),                # unsupported explicit timeframe is not replaced
+])
+def test_compiler_never_changes_the_meaning_of_a_clause(prompt, expected):
+    p = compile_prompts([prompt], default_timeframe="1d")
+    if expected is None:
+        assert p.status == "UNRESOLVED" and p.rule is None, p.as_dict()
+        assert prompt in p.unresolved
+    else:
+        assert p.status == "COMPILED", p.as_dict()
+        assert preview(p.rule)["condition"] == expected
+
+
+def _hourly_vs_daily_close(hourly_closes):
+    day = 86_400_000
+    start = 1_735_689_600_000
+    d1 = series_from_closes([100.0, 100.0, 100.0, 200.0, 100.0], "1d", start_ms=start)
+    h1 = series_from_closes(hourly_closes, "1h", start_ms=start + 5 * day)
+    rule = StrategyRule(name="x", trigger_timeframe="1h", condition=Compare(
+        left=MetricRef(name="close", timeframe="1h"), op="crosses_above",
+        right=MetricRef(name="close", timeframe="1d")))
+    return evaluate(rule, _getter(**{"1h": h1, "1d": d1}), as_of_ms=h1.candles[-1].close_time_ms + 1)["result"]
+
+
+def test_multi_timeframe_crossing_uses_values_as_of_the_previous_trigger_close():
+    # Oracle: at the previous 1h close and now, the last closed daily bar is the same one (close 100).
+    # Hourly 150 -> 160 stays above 100: no crossing. The old evaluator compared with the daily bar before (200).
+    assert _hourly_vs_daily_close([150.0] * 9 + [160.0]) == "NO_MATCH"
+    assert _hourly_vs_daily_close([90.0] * 9 + [160.0]) == "MATCH"
+
+
+def test_boolean_and_non_finite_comparison_values_are_rejected():
+    left = {"name": "close", "timeframe": "1h"}
+    for bad in (True, False, "inf", float("nan")):
+        with pytest.raises(ValidationError):
+            Compare.model_validate({"left": left, "op": ">", "right": bad})
+
+
+def test_numpy_candles_still_give_a_definite_result():
+    np = pytest.importorskip("numpy")
+    from dataclasses import replace
+    s = series_from_closes([float(x) for x in range(1, 31)], "1h")
+    s = CandleSeries(s.instrument, s.timeframe, tuple(
+        replace(c, close=np.float64(c.close), high=np.float64(c.high)) for c in s.candles))
+    rule = StrategyRule(name="x", trigger_timeframe="1h", condition=Compare(
+        left=MetricRef(name="close", timeframe="1h"), op=">", right=MetricRef(name="sma", period=5, timeframe="1h")))
+    r = evaluate(rule, _getter(**{"1h": s}), as_of_ms=s.candles[-1].close_time_ms + 1)
+    assert r["result"] == "MATCH" and type(r["leaves"][0]["result"]) is bool
+
+
+def test_bars_that_do_not_open_on_their_interval_boundary_are_rejected():
+    day = 86_400_000
+    with pytest.raises(ValueError):  # DATA-7: a daily bar opening at 12:00 was accepted
+        series_from_closes([1.0, 2.0], "1d", start_ms=1_735_689_600_000 + day // 2)
+    with pytest.raises(ValueError):  # a weekly bar opening on Wednesday 2025-01-01, not Monday
+        series_from_closes([1.0, 2.0], "1w", start_ms=1_735_689_600_000)
+    assert series_from_closes([1.0, 2.0], "1w", start_ms=1_735_516_800_000).candles  # Monday 2024-12-30
+
+
+def test_reaudit_compiler_and_rule_value_cases():
+    for prompt in ("close is above SMA 10 on the 1 M chart", "1 M close is above SMA 10"):
+        p = compile_prompts([prompt])
+        assert p.rule is not None and p.rule.trigger_timeframe == "1M", prompt  # was 1-minute
+    for state, word in (("DOWN", "downtrend"), ("UP", "uptrend")):
+        p = compile_prompts([f"4h trend is {word}"])
+        assert p.status == "NEEDS_CONFIRMATION" and p.rule.condition.state == state
+    with pytest.raises(ValidationError):
+        Compare.model_validate({"left": {"name": "close", "timeframe": "1h"}, "op": ">", "right": "1"})
+    with pytest.raises(ValueError):  # 3d bars open on whole UTC days
+        series_from_closes([1.0, 2.0], "3d", start_ms=1_735_689_600_007)
+    assert series_from_closes([1.0, 2.0], "3d", start_ms=1_735_689_600_000).candles
+
+
+@pytest.mark.parametrize("period", [True, "20", 2.0])
+def test_a_period_must_be_a_real_integer(period):
+    with pytest.raises(ValidationError):  # verifier: period true became SMA(1)
+        MetricRef.model_validate({"name": "sma", "period": period, "timeframe": "1h"})

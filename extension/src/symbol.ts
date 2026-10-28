@@ -23,6 +23,20 @@ export function isMarket(value: unknown): value is Market {
   return value === "usdm_perpetual" || value === "spot";
 }
 
+// Account and trading routes (your own orders and fills) also cover stocks such as BRK.B: the engine's
+// account rule. Market analysis keeps SYMBOL_RE.
+export const ACCOUNT_SYMBOL_RE = /^[A-Z0-9][A-Z0-9.]{0,29}$/;
+export const ACCOUNT_MARKETS = ["spot", "usdm_perpetual", "stock"] as const;
+export type AccountMarket = (typeof ACCOUNT_MARKETS)[number];
+
+export function isValidAccountSymbol(value: unknown): value is string {
+  return typeof value === "string" && ACCOUNT_SYMBOL_RE.test(value);
+}
+
+export function isAccountMarket(value: unknown): value is AccountMarket {
+  return typeof value === "string" && (ACCOUNT_MARKETS as readonly string[]).includes(value);
+}
+
 /** Normalize user-typed text into a symbol, or null if it is not a valid symbol. */
 export function normalizeSymbol(raw: string): string | null {
   const s = raw.trim().toUpperCase().replace(/[\s/_-]/g, "");
@@ -74,4 +88,11 @@ export function parseBinanceUrl(raw: string | undefined | null): Instrument | nu
 
 export function marketLabel(market: Market): string {
   return market === "usdm_perpetual" ? "USD-M perpetual" : "Spot";
+}
+
+/** Markets to offer for a connection: those its exchange lists (from the exchange catalog) that account routes
+ * support, in catalog order; spot and USD-M perpetual when the catalog lists none. */
+export function offeredAccountMarkets(catalogMarkets: readonly string[] | undefined | null): AccountMarket[] {
+  const known = (catalogMarkets ?? []).filter(isAccountMarket);
+  return known.length ? [...new Set(known)] : ["spot", "usdm_perpetual"];
 }

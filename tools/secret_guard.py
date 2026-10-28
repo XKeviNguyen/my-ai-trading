@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Conservative, dependency-free staged/history secret gate for local development.
+"""Conservative, dependency-free staged/history secret gate for local development and CI.
 
-Checks staged additions and outgoing Git commits. It is defense in depth, not a
-replacement for dedicated secret scanners, human review, or GitHub protections.
+Checks staged additions, outgoing Git commits, or (with --history) every file
+revision reachable from HEAD. It is defense in depth, not a replacement for
+dedicated secret scanners, human review, or GitHub protections.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ SECRET_VALUE_PATTERN = re.compile(
 PRIVATE_KEY_PATTERN = re.compile(rb"-----BEGIN (?:RSA |DSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----")
 AWS_KEY_PATTERN = re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 ASSIGNMENT_PATTERN = re.compile(
-    rb"(?im)^\s*(?:export\s+)?(?:[A-Za-z0-9_]*?(?:API_KEY|ACCESS_TOKEN|REFRESH_TOKEN|CLIENT_SECRET|SECRET_KEY|PASSWORD|PRIVATE_KEY))\s*[:=]\s*['\"]?([^\s\"',;#]+)",
+    rb"(?im)^\s*(?:export\s+)?(?:[A-Za-z0-9_]*?(?:API_KEY|API_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|CLIENT_SECRET|SECRET_KEY|PASSWORD|PASSPHRASE|PRIVATE_KEY))\s*[:=]\s*['\"]?([^\s\"',;#]+)",
 )
 PLACEHOLDERS = (b"example", b"sample", b"your", b"dummy", b"placeholder", b"replace", b"test", b"fake", b"changeme", b"xxxx", b"os.getenv", b"process.env", b"${", b"<", b"...", b"none", b"null")
 
@@ -84,7 +85,7 @@ def scan_blob(path: str, spec: str) -> str | None:
 
 
 def staged() -> list[tuple[str, str]]:
-    paths = git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z").split(b"\0")
+    paths = git("diff", "--cached", "--name-only", "--diff-filter=ACMRT", "-z").split(b"\0")
     return [(p.decode("utf-8", "surrogateescape"), ":" + p.decode("utf-8", "surrogateescape")) for p in paths if p]
 
 
@@ -110,7 +111,7 @@ def outgoing() -> list[tuple[str, str]]:
             commits_scanned.add(c)
             if len(commits_scanned) > MAX_COMMITS:
                 raise RuntimeError("too many outgoing commits; use dedicated history scan and review")
-            files = git("diff-tree", "--root", "--no-commit-id", "-r", "--name-only", "--diff-filter=ACMR", "-z", c).split(b"\0")
+            files = git("diff-tree", "--root", "--no-commit-id", "-r", "--name-only", "--diff-filter=ACMRT", "-z", c).split(b"\0")
             for path_bytes in files:
                 if not path_bytes:
                     continue
@@ -124,15 +125,57 @@ def outgoing() -> list[tuple[str, str]]:
     return pairs
 
 
+def history() -> list[tuple[str, str]]:
+    """Every file revision added or modified in any commit reachable from HEAD.
+
+    Each path is checked by name and each blob by content. Merge commits are diffed
+    against every parent (-m), so content that first appears in a merge is covered.
+    Needs the full history: in CI, check out with fetch-depth: 0.
+    """
+    if git("rev-parse", "--is-shallow-repository").strip() == b"true":
+        raise RuntimeError("shallow clone; full history is required (fetch-depth: 0)")
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for c in git("rev-list", "HEAD").decode().splitlines():
+        raw = git("diff-tree", "--root", "-m", "-r", "--no-commit-id", "--diff-filter=ACMRT", "-z", c)
+        fields = raw.split(b"\0")
+        i = 0
+        while i < len(fields):
+            meta = fields[i]
+            i += 1
+            if not meta.startswith(b":"):
+                continue
+            parts = meta[1:].split()
+            if len(parts) != 5 or i >= len(fields):
+                raise RuntimeError("unexpected git diff-tree output; refusing to proceed")
+            new_mode, blob, status = parts[1], parts[3].decode(), parts[4][:1]
+            path_bytes = fields[i]
+            i += 1
+            if status in (b"R", b"C"):
+                path_bytes = fields[i]  # Renames and copies carry a second (destination) path.
+                i += 1
+            if new_mode == b"160000":
+                continue  # Submodule commit pointer, not a blob.
+            item = (path_bytes.decode("utf-8", "surrogateescape"), blob)
+            if item not in seen:
+                seen.add(item)
+                pairs.append(item)
+    return pairs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Refuse commits/pushes with likely secrets")
     parser.add_argument("--staged", action="store_true", help="scan the staged index")
     parser.add_argument("--pre-push", action="store_true", help="scan outgoing commits from Git pre-push stdin")
+    parser.add_argument("--history", action="store_true", help="scan every file revision reachable from HEAD (CI)")
     args = parser.parse_args()
-    if args.staged == args.pre_push:
-        parser.error("choose exactly one of --staged or --pre-push")
+    if [args.staged, args.pre_push, args.history].count(True) != 1:
+        parser.error("choose exactly one of --staged, --pre-push or --history")
     try:
-        pairs = staged() if args.staged else outgoing()
+        if args.history:
+            pairs = history()
+        else:
+            pairs = staged() if args.staged else outgoing()
         issues = []
         for path, spec in pairs:
             problem = scan_blob(path, spec)
@@ -146,7 +189,7 @@ def main() -> int:
                 print("  additional issues omitted", file=sys.stderr)
             print("No secret values printed. Remove sensitive content from index AND Git history before pushing.", file=sys.stderr)
             return 1
-        print(f"SECRET GUARD: PASS ({len(pairs)} staged/outgoing file revisions checked)")
+        print(f"SECRET GUARD: PASS ({len(pairs)} file revisions checked)")
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"SECRET GUARD: ERROR: {exc}", file=sys.stderr)

@@ -33,6 +33,8 @@ REPORT_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 CONN_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 ORDER_ID_RE = re.compile(r"^mat[0-9a-f]{16}$")
 PREVIEW_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+# An entity tag as the engine writes it ("<16 hex>") or any RFC 9110 opaque tag; never a header injection.
+ETAG_RE = re.compile(r'^(?:W/)?"[\x21\x23-\x7e]{1,128}"$')
 DEFAULT_TIMEOUT_S = 30.0
 LLM_TIMEOUT_S = 180.0
 HEALTH_TIMEOUT_S = 5.0
@@ -122,6 +124,16 @@ class ConflictError(ApiError):
         return "Conflict: " + (self.detail or "state changed; reload and review")
 
 
+class PreconditionFailedError(ApiError):
+    """412: the settings changed elsewhere since they were loaded; nothing was saved or overwritten."""
+    kind = "changed_elsewhere"
+
+    def user_message(self) -> str:
+        return ("Settings changed elsewhere (another window, the side panel or another app) since they were loaded, "
+                "so nothing was saved and nothing was overwritten. The latest settings were reloaded: review them and "
+                "apply your change again.")
+
+
 class ForbiddenError(ApiError):
     """403: outside the app's account/trading policy (never a token problem)."""
     kind = "forbidden"
@@ -185,7 +197,7 @@ class InternalError(ApiError):
 
 _STATUS_ERRORS: dict[int, type[ApiError]] = {
     400: ValidationError, 401: UnauthorizedError, 403: ForbiddenError, 404: NotFoundError,
-    409: ConflictError, 410: ExpiredError, 421: EngineUnavailableError, 422: ValidationError,
+    409: ConflictError, 410: ExpiredError, 412: PreconditionFailedError, 421: EngineUnavailableError, 422: ValidationError,
     424: ExchangeAuthError, 429: RateLimitedError, 501: NotSupportedError, 502: UpstreamError,
     503: UpstreamUnavailableError, 504: OutcomeUnknownError,
 }
@@ -200,8 +212,10 @@ def error_for_status(status: int, detail: str, retry_after_s: int | None = None)
 
 # ---------------------------------------------------------------- helpers
 def token_path() -> Path:
-    """Same location the engine uses (respects XDG_CONFIG_HOME)."""
-    base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    """Same location the engine uses: XDG_CONFIG_HOME only if it is an absolute path (empty or relative values are
+    ignored, as the XDG spec and the engine do)."""
+    value = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(value) if os.path.isabs(value) else Path.home() / ".config"
     return base / "my-ai-trading" / "api_token"
 
 
@@ -332,9 +346,14 @@ class ApiClient:
 
     def _send(self, method: str, path: str, *, query: dict[str, Any] | None, json_body: Any, body: bytes | None,
               content_type: str | None, auth: bool, timeout_s: float | None,
-              accept: str) -> tuple[int, bytes, str | None]:
+              accept: str, if_match: str | None = None) -> tuple[int, bytes, str | None]:
+        """Returns (status, body, ETag of the response if it carried a well-formed one)."""
         url = self.build_url(path, query)
         headers = {"Accept": accept}
+        if if_match is not None:
+            if not isinstance(if_match, str) or not ETAG_RE.fullmatch(if_match):
+                raise ValidationError(0, "invalid settings version tag")
+            headers["If-Match"] = if_match
         token: str | None = None
         if auth:
             token = (self._get_token() or "").strip()
@@ -353,11 +372,13 @@ class ApiClient:
         elif method in ("POST", "PUT"):
             data = b""
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        status, raw, retry = 0, b"", None
+        status, raw, retry, etag = 0, b"", None, None
         try:
             with self._opener.open(req, timeout=timeout_s or self.timeout_s) as resp:
                 status = resp.status
                 raw = resp.read(MAX_RESPONSE_BYTES + 1)
+                tag = (resp.headers.get("ETag") or "").strip()
+                etag = tag if ETAG_RE.fullmatch(tag) else None
         except RedirectRefusedError:
             raise
         except urllib.error.HTTPError as exc:
@@ -384,21 +405,29 @@ class ApiClient:
             except (UnicodeDecodeError, ValueError):
                 parsed = None
             raise error_for_status(status, scrub(extract_detail(parsed), token), retry)
-        return status, raw, token
+        return status, raw, etag
 
     def request(self, method: str, path: str, *, query: dict[str, Any] | None = None, json_body: Any = None,
                 body: bytes | None = None, content_type: str | None = None, auth: bool = True,
                 timeout_s: float | None = None) -> dict[str, Any]:
-        status, raw, _ = self._send(method, path, query=query, json_body=json_body, body=body,
-                                    content_type=content_type, auth=auth, timeout_s=timeout_s,
-                                    accept="application/json")
+        return self.request_versioned(method, path, query=query, json_body=json_body, body=body,
+                                      content_type=content_type, auth=auth, timeout_s=timeout_s)[0]
+
+    def request_versioned(self, method: str, path: str, *, query: dict[str, Any] | None = None,
+                          json_body: Any = None, body: bytes | None = None, content_type: str | None = None,
+                          auth: bool = True, timeout_s: float | None = None,
+                          if_match: str | None = None) -> tuple[dict[str, Any], str | None]:
+        """Like `request`, and also returns the response's ETag (None if absent)."""
+        status, raw, etag = self._send(method, path, query=query, json_body=json_body, body=body,
+                                       content_type=content_type, auth=auth, timeout_s=timeout_s,
+                                       accept="application/json", if_match=if_match)
         try:
             parsed = json.loads(raw.decode("utf-8")) if raw else None
         except (UnicodeDecodeError, ValueError):
             parsed = None
         if not isinstance(parsed, dict):
             raise ApiError(status, "response was not a JSON object")
-        return parsed
+        return parsed, etag
 
     def request_text(self, path: str, *, query: dict[str, Any] | None = None) -> str:
         """GET a text response (e.g. a Markdown report)."""
@@ -419,14 +448,30 @@ class ApiClient:
     def get_settings(self) -> dict[str, Any]:
         return self.request("GET", "/api/v1/settings")
 
-    def put_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
-        return self.request("PUT", "/api/v1/settings", json_body=settings)
+    def get_settings_versioned(self) -> tuple[dict[str, Any], str | None]:
+        """Settings plus their version tag (ETag); send it back as `if_match` so a save never overwrites changes
+        made elsewhere in between (the engine then answers 412: PreconditionFailedError)."""
+        return self.request_versioned("GET", "/api/v1/settings")
+
+    def put_settings(self, settings: dict[str, Any], *, if_match: str | None = None) -> dict[str, Any]:
+        return self.put_settings_versioned(settings, if_match=if_match)[0]
+
+    def put_settings_versioned(self, settings: dict[str, Any], *,
+                               if_match: str | None) -> tuple[dict[str, Any], str | None]:
+        return self.request_versioned("PUT", "/api/v1/settings", json_body=settings, if_match=if_match)
+
+    def update_settings_versioned(self, mutate: Callable[[dict[str, Any]], None], *,
+                                  base_etag: str | None = None) -> tuple[dict[str, Any], str | None]:
+        """GET the current settings and their tag, apply `mutate`, PUT the full object back with If-Match.
+        `base_etag` is the tag of the settings a form was rendered from (so stale form values cannot overwrite a
+        newer change); without it the tag of this GET is used. A 412 is raised, never retried."""
+        current, etag = self.get_settings_versioned()
+        mutate(current)
+        return self.put_settings_versioned(current, if_match=base_etag or etag)
 
     def update_settings(self, mutate: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
-        """Fetch current settings, apply `mutate` to them and PUT the full object back."""
-        current = self.get_settings()
-        mutate(current)
-        return self.put_settings(current)
+        """Fetch current settings, apply `mutate` to them and PUT the full object back (compare-and-set)."""
+        return self.update_settings_versioned(mutate)[0]
 
     def analysis(self, symbol: str, market: str, analysis_timeframe: str | None = None) -> dict[str, Any]:
         require_symbol(symbol, market)
@@ -505,11 +550,6 @@ class ApiClient:
     def reports(self) -> dict[str, Any]:
         return self.request("GET", "/api/v1/reports")
 
-    def report_json(self, report_id: str) -> dict[str, Any]:
-        if not REPORT_ID_RE.fullmatch(report_id or ""):
-            raise ValidationError(0, "invalid report id")
-        return self.request("GET", f"/api/v1/reports/{report_id}", query={"format": "json"})
-
     def report_markdown(self, report_id: str) -> str:
         if not REPORT_ID_RE.fullmatch(report_id or ""):
             raise ValidationError(0, "invalid report id")
@@ -587,4 +627,9 @@ class ApiClient:
 
     def cancel_order(self, client_order_id: str) -> dict[str, Any]:
         return self.request("POST", f"/api/v1/trading/orders/{require_order_id(client_order_id)}/cancel",
+                            json_body={"confirm": True})
+
+    def resolve_order(self, client_order_id: str) -> dict[str, Any]:
+        """Stop tracking a never-acknowledged order after the user checked the exchange's order history."""
+        return self.request("POST", f"/api/v1/trading/orders/{require_order_id(client_order_id)}/resolve",
                             json_body={"confirm": True})
