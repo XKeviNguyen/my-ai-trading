@@ -47,13 +47,19 @@ Ask most "AI trading" tools *"should I buy?"* and you get a confident answer wit
 |---|---|
 | **What is the data actually showing?** | Indicators, levels and events on **closed candles only**, side by side for every timeframe |
 | **What supports my idea, and what contradicts it?** | *Challenge My Thesis* lists evidence for and against, hidden assumptions, unknowns, and the prices that would prove you wrong |
-| **Does this trading method even apply here?** | 20 trader-inspired profiles, each checked against its own timeframe and data needs before it is used |
+| **Does this trading method even apply here?** | 21 trader-inspired profiles, each checked against its own timeframe and data needs before it is used |
 | **What would this rule have done?** | Plain-English rules compiled into a safe typed rule language, then dry-run or backtested with fees, slippage and funding |
+| **Would Brandt or Edwards & Magee call this pattern complete?** | Two trading-playbook profiles judge each chart pattern by their own written rules, show the measured facts behind the verdict, and count how earlier signals played out on the same chart |
+| **How big should this position be?** | A risk calculator sizes the position so that hitting the stop loses a fixed share of capital (0.5–1% by default, never more than 2%) |
 | **What does my account actually hold?** | Read-only balances, positions and risk across Binance, Bybit, OKX and Interactive Brokers (paper) |
 
 Every alert and answer shows its evidence: the values, the candle they came from, and the condition that would invalidate them.
 
 ## Screenshots
+
+| Trading-playbook profiles (side panel) | Risk calculator (side panel) |
+|---|---|
+| <img src="docs/images/playbook-perspectives.png" alt="Brandt and Edwards & Magee perspectives: a completed rectangle breakout with its measured facts, pivot check, study levels and pullback zone" width="400"> | <img src="docs/images/risk-calculator.png" alt="Risk tab: capital, risk per trade, entry, stop and target give a position size, the risk if stopped and the reward-to-risk ratio" width="400"> |
 
 | Portfolio and risk (side panel) | Strategy Studio (side panel) |
 |---|---|
@@ -62,6 +68,10 @@ Every alert and answer shows its evidence: the values, the candle they came from
 | Desktop app: analysis | Desktop app: portfolio |
 |---|---|
 | <img src="docs/images/desktop-analysis.png" alt="Desktop app analysis tab with timeframe cards" width="480"> | <img src="docs/images/desktop-portfolio.png" alt="Desktop app portfolio tab with allocation and exposure" width="480"> |
+
+| Desktop app: playbook profiles | Desktop app: risk calculator |
+|---|---|
+| <img src="docs/images/desktop-playbook.png" alt="Desktop app perspectives for Brandt and Edwards & Magee with pattern verdicts" width="480"> | <img src="docs/images/desktop-risk.png" alt="Desktop app Risk tab with a position-size result" width="480"> |
 
 <sub>All screenshots use synthetic data from the project's test fixtures and a simulated testnet account, not real markets.</sub>
 
@@ -73,15 +83,17 @@ Every alert and answer shows its evidence: the values, the candle they came from
 |---|---|:-:|---|
 | **Market analysis** | Multi-timeframe engine | ✅ | 1m to 1W plus calendar months. SMA, EMA, RSI, MACD, Bollinger Bands, ADX/DI, ATR, volume ratio, prior highs and lows |
 | | Monitoring and alerts | ✅ | Runs once per newly closed candle per timeframe. Duplicate-proof alerts, backoff, stale-data detection, quiet hours |
-| | Chart patterns | 🧪 | VCP, cup and handle, head and shoulders, flags, triangles, wedges, Darvas boxes, each with an invalidation level |
+| | Chart patterns | 🧪 | VCP, cup and handle, head and shoulders, flags, triangles, wedges, rectangles, double tops and bottoms, Darvas boxes, each with an invalidation level |
+| | Trading-playbook profiles | 🧪 | Brandt and Edwards & Magee read the same detections with their own rules: completion filter, pattern length, volume, Last Day Rule or nearest-swing stops (with basing points to trail), measured targets. Each verdict shows the numbers behind it, whether the pattern survives other pivot settings, and how earlier signals did on this chart |
+| | Risk calculator | ✅ | Position size from capital, risk per trade, entry and stop, rounded down to the lot step; exact decimal math; never widens a stop to fit |
 | | Live streams | ✅ | Binance kline WebSocket streams wake the monitor the moment a candle closes |
 | **Copilot and strategies** | Copilot | 🧪 | Facts always come from the engine. Optional AI interpretation is clearly labeled |
 | | Challenge My Thesis | ✅ | Evidence for and against, assumptions, unknowns, falsification levels |
-| | 20 trader profiles | 🧪 | Native, Hybrid, Adapted or Custom modes. Seven have rule checks (Minervini, Weinstein, Turtles, Darvas, Williams, Raschke, Brandt) |
+| | 21 trader profiles | 🧪 | Native, Hybrid, Adapted or Custom modes. Eight have rule checks (Minervini, Weinstein, Turtles, Darvas, Williams, Raschke, Brandt, Edwards & Magee) |
 | | Strategy Studio | ✅ | Plain English to a typed rule. Preview, dry-run, approve one exact version, deactivate. A clause the compiler cannot map exactly stays UNRESOLVED instead of being guessed |
 | **Vision and ML** | Chart screenshots | 🧪 | OpenCV candle geometry and Tesseract OCR: **99.53%** of price-axis labels read exactly on a held-out **synthetic** benchmark (not yet tested on real screenshots) |
 | | ML research lab | 🧪 | scikit-learn and LightGBM in walk-forward folds with purge gaps, calibration and leakage checks |
-| | Backtesting | ✅ | Next-bar fills, fees, slippage, perpetual funding, ATR stops; always labeled hypothetical |
+| | Backtesting | ✅ | Next-bar fills, fees, slippage, perpetual funding, ATR stops; always labeled hypothetical. Playbook mode adds structural stops, measured targets, Brandt's trailing stop and fixed-risk sizing, and every run is replayed with zero and double costs next to a hold-the-window baseline |
 | **Accounts** | Exchange connections | 🧪 | Binance, Bybit, OKX by API key; Interactive Brokers paper through IBKR's own gateway |
 | | Portfolio and risk | 🧪 | Value, allocation, exposure, margin use, distance to liquidation, risk warnings with your own limits |
 | | Testnet Trading Mode | 🧪 | Off by default. Exchange-rule preview, per-order confirmation, reconciliation of unknown outcomes |
@@ -141,7 +153,7 @@ flowchart LR
 | **Clients** | Render, collect input, never invent numbers | `extension/src/views/*.ts`, `desktop/my_ai_trading_desktop/views/*.py` |
 | **Guard** | Reject before parsing: host, token, origin, size, rate | `api.py` `RequestGuard` |
 | **Market core** | Closed candles, indicators, events, patterns, multi-timeframe snapshots | `domain.py`, `market.py`, `engine.py`, `indicators.py`, `patterns.py` |
-| **Strategy** | Prompt to typed rule, evaluation, methodology applicability | `compiler.py`, `rules.py`, `methodology.py`, `perspectives.py`, `strategies.py` |
+| **Strategy** | Prompt to typed rule, evaluation, methodology applicability, playbook profiles, stops and sizing | `compiler.py`, `rules.py`, `methodology.py`, `perspectives.py`, `strategies.py`, `playbook.py`, `stops.py`, `risk.py` |
 | **AI** | Facts first, optional LLM, budgets, cache, thesis audit | `copilot.py`, `thesis.py`, `chartvision.py`, `ml.py` |
 | **Accounts** | Credentials, adapters, analytics, testnet orders | `accounts/credentials.py`, `accounts/adapters/*`, `accounts/analytics.py`, `accounts/trading.py` |
 | **Persistence** | Settings, strategies, alerts, usage, journal; never secrets | `store.py` |
@@ -382,6 +394,7 @@ All routes live under `/api/v1` on `127.0.0.1:8765`. Every route except `/health
 | Group | Routes | Notes |
 |---|---|---|
 | **Market** | `GET /snapshot` · `GET /analysis` · `GET /methodologies` · `POST /backtest` | Public data only; provider calls are rate limited |
+| **Risk** | `POST /risk/size` | Pure arithmetic: no market data, no orders |
 | **Strategy Studio** | `POST /strategies/compile` · `POST /strategies/dry-run` · `GET/POST /strategies` · `PUT /strategies/{id}` · `POST /strategies/{id}/versions/{v}/approve` · `POST /strategies/{id}/deactivate` | Approval is bound to the exact `rule_hash` you previewed |
 | **Copilot** | `POST /copilot/ask` · `POST /copilot/challenge` · `POST /copilot/vision` | Screenshot size checked before decoding |
 | **Monitoring** | `GET /alerts?after_seq=` · `GET /monitor/status` | Cursor paging that never skips alerts |

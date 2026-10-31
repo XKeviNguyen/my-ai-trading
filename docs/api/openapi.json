@@ -171,6 +171,15 @@
       "title": "Exit On Rule False",
       "type": "boolean"
      },
+     "exit_policy": {
+      "default": "hold",
+      "enum": [
+       "hold",
+       "trailing_three_day"
+      ],
+      "title": "Exit Policy",
+      "type": "string"
+     },
      "fee_bps": {
       "default": 5.0,
       "maximum": 100.0,
@@ -190,6 +199,22 @@
       "minimum": 1.0,
       "title": "Hold Bars",
       "type": "integer"
+     },
+     "risk_fraction": {
+      "default": 0.008,
+      "exclusiveMinimum": 0.0,
+      "maximum": 0.02,
+      "title": "Risk Fraction",
+      "type": "number"
+     },
+     "sizing": {
+      "default": "full_equity",
+      "enum": [
+       "full_equity",
+       "fixed_risk"
+      ],
+      "title": "Sizing",
+      "type": "string"
      },
      "slippage_bps": {
       "default": 2.0,
@@ -258,6 +283,21 @@
       "minimum": 1.0,
       "title": "N Folds",
       "type": "integer"
+     },
+     "playbook_profile": {
+      "anyOf": [
+       {
+        "enum": [
+         "brandt",
+         "edwards_magee"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Playbook Profile"
      },
      "rule": {
       "anyOf": [
@@ -906,6 +946,118 @@
      "symbol"
     ],
     "title": "ReportRequest",
+    "type": "object"
+   },
+   "RiskSizeRequest": {
+    "additionalProperties": false,
+    "description": "Inputs as numbers or decimal strings; risk_fraction 0.008 = 0.8% of capital (cap 2%). Magnitudes are\nbounded so arithmetic and responses stay small (1e-12 .. 1e15).",
+    "properties": {
+     "capital": {
+      "anyOf": [
+       {
+        "maximum": 1000000000000000.0,
+        "minimum": 1e-12,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "title": "Capital"
+     },
+     "entry": {
+      "anyOf": [
+       {
+        "maximum": 1000000000000000.0,
+        "minimum": 1e-12,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "title": "Entry"
+     },
+     "point_value": {
+      "anyOf": [
+       {
+        "maximum": 1000000000000000.0,
+        "minimum": 1e-12,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "default": "1",
+      "title": "Point Value"
+     },
+     "quantity_step": {
+      "anyOf": [
+       {
+        "maximum": 1000000000000000.0,
+        "minimum": 1e-12,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Quantity Step"
+     },
+     "risk_fraction": {
+      "anyOf": [
+       {
+        "maximum": 0.02,
+        "minimum": 0.0001,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "default": "0.008",
+      "title": "Risk Fraction"
+     },
+     "stop": {
+      "anyOf": [
+       {
+        "maximum": 1000000000000000.0,
+        "minimum": 1e-12,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "title": "Stop"
+     },
+     "target": {
+      "anyOf": [
+       {
+        "maximum": 1000000000000000.0,
+        "minimum": 1e-12,
+        "type": "number"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     }
+    },
+    "required": [
+     "capital",
+     "entry",
+     "stop"
+    ],
+    "title": "RiskSizeRequest",
     "type": "object"
    },
    "RuleBody": {
@@ -2451,6 +2603,59 @@
      }
     },
     "summary": "Get Report"
+   }
+  },
+  "/api/v1/risk/size": {
+   "post": {
+    "description": "Position size from a risk budget (playbook §8). Pure arithmetic: no market data, no orders.",
+    "operationId": "risk_size_api_v1_risk_size_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "authorization",
+      "required": false,
+      "schema": {
+       "default": "",
+       "title": "Authorization",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RiskSizeRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "title": "Response Risk Size Api V1 Risk Size Post",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Risk Size"
    }
   },
   "/api/v1/settings": {

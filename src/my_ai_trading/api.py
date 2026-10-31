@@ -16,6 +16,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from decimal import Decimal
 from typing import Any, Literal
 
 import re
@@ -28,7 +29,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import __version__
-from .backtest import BacktestBusyError, BacktestConfig, run_backtest, walk_forward
+from .backtest import BacktestBusyError, BacktestConfig, PlaybookSource, run_backtest, walk_forward
+from .accounts.adapters.base import plain
 from .accounts.api import account_router
 from .accounts.credentials import CredentialStore
 from .accounts.service import AccountService
@@ -43,6 +45,7 @@ from .monitor import Monitor
 from .perspectives import evaluate_perspectives
 from .providers.binance import BinancePublic, MarketDataError, RateLimitedError
 from .reports import to_markdown
+from .risk import position_size, reward_risk
 from .rules import StrategyRule, evaluate, preview
 from .store import LOCAL_USER, SettingsConflict, Store, UserSettings, default_db_path, xdg_dir
 
@@ -316,6 +319,9 @@ class BacktestConfigBody(BaseModel):
     funding_rate_per_8h: float = Field(default=0.0, ge=-0.01, le=0.01)
     stop_atr_mult: float | None = Field(default=None, gt=0, le=20)
     exit_on_rule_false: bool = False
+    exit_policy: Literal["hold", "trailing_three_day"] = "hold"
+    sizing: Literal["full_equity", "fixed_risk"] = "full_equity"
+    risk_fraction: float = Field(default=0.008, gt=0, le=0.02)
 
 
 class BacktestRequest(BaseModel):
@@ -324,11 +330,28 @@ class BacktestRequest(BaseModel):
     market: Market = "usdm_perpetual"
     rule: StrategyRule | None = None
     event_type: str | None = Field(default=None, max_length=40)
+    playbook_profile: Literal["brandt", "edwards_magee"] | None = None
     timeframe: str = Field(default="1d", max_length=4)
     bars: int = Field(default=1000, ge=100, le=1499)
     config: BacktestConfigBody
     walk_forward: bool = False
     n_folds: int = Field(default=4, ge=1, le=10)
+
+
+_MIN_DEC, _MAX_DEC = Decimal("1e-12"), Decimal("1e15")
+
+
+class RiskSizeRequest(BaseModel):
+    """Inputs as numbers or decimal strings; risk_fraction 0.008 = 0.8% of capital (cap 2%). Magnitudes are
+    bounded so arithmetic and responses stay small (1e-12 .. 1e15)."""
+    model_config = ConfigDict(extra="forbid")
+    capital: Decimal = Field(ge=_MIN_DEC, le=_MAX_DEC, allow_inf_nan=False)
+    entry: Decimal = Field(ge=_MIN_DEC, le=_MAX_DEC, allow_inf_nan=False)
+    stop: Decimal = Field(ge=_MIN_DEC, le=_MAX_DEC, allow_inf_nan=False)
+    target: Decimal | None = Field(default=None, ge=_MIN_DEC, le=_MAX_DEC, allow_inf_nan=False)
+    risk_fraction: Decimal = Field(default=Decimal("0.008"), ge=Decimal("0.0001"), le=Decimal("0.02"), allow_inf_nan=False)
+    point_value: Decimal = Field(default=Decimal(1), ge=_MIN_DEC, le=_MAX_DEC, allow_inf_nan=False)
+    quantity_step: Decimal | None = Field(default=None, ge=_MIN_DEC, le=_MAX_DEC, allow_inf_nan=False)
 
 
 def create_app(*, service: MarketDataService | None = None, store: Store | None = None,
@@ -641,10 +664,26 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
         _, snap = snapshot_for(body.symbol, body.market, tuple(store.settings().timeframes))
         return copilot.challenge_thesis(body.thesis, snap, focus_timeframe=body.focus_timeframe, deep=body.deep)
 
+    @app.post("/api/v1/risk/size", dependencies=A)
+    def risk_size(body: RiskSizeRequest) -> dict[str, Any]:
+        """Position size from a risk budget (playbook §8). Pure arithmetic: no market data, no orders."""
+        try:
+            r = position_size(body.capital, body.entry, body.stop, fraction=body.risk_fraction,
+                              point_value=body.point_value, quantity_step=body.quantity_step)
+            rr = None if body.target is None else reward_risk(body.entry, body.stop, body.target)
+            rr_text = None if rr is None else plain(rr.quantize(Decimal("0.0001")))
+        except (ValueError, ArithmeticError) as exc:  # decimal.Overflow/InvalidOperation are ArithmeticErrors
+            raise HTTPException(422, str(exc) or type(exc).__name__) from exc
+
+        def text(v: Any) -> Any:
+            return plain(v) if isinstance(v, Decimal) else {k: text(x) for k, x in v.items()} \
+                if isinstance(v, dict) else v
+        return {**text(r), "reward_risk": rr_text}
+
     @app.post("/api/v1/backtest", dependencies=L)
     def backtest(body: BacktestRequest) -> dict[str, Any]:
-        if (body.rule is None) == (body.event_type is None):
-            raise HTTPException(422, "provide exactly one of rule or event_type")
+        if sum(x is not None for x in (body.rule, body.event_type, body.playbook_profile)) != 1:
+            raise HTTPException(422, "provide exactly one of rule, event_type or playbook_profile")
         inst = upstream(service.resolve, body.symbol, body.market)
         try:
             cfg = BacktestConfig(**body.config.model_dump())
@@ -654,6 +693,10 @@ def create_app(*, service: MarketDataService | None = None, store: Store | None 
             source: Any = body.rule
             tf = body.rule.trigger_timeframe
             others = {t: upstream(service.series, inst, t, bars=body.bars) for t in body.rule.timeframes() - {tf}}
+        elif body.playbook_profile is not None:
+            if body.timeframe != "1d":
+                raise HTTPException(422, "playbook profiles are backtested on daily bars")
+            source, tf, others = PlaybookSource(body.playbook_profile), "1d", {}
         else:
             source, tf, others = body.event_type, body.timeframe, {}
             upstream(Timeframe, tf)

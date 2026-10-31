@@ -82,6 +82,7 @@ QFrame#rainbow-rule {{ border: 0; background: {rainbow}; }}
 QLabel#card-title {{ color: #ffffff; }}
 QLabel#mode-label {{ color: {t['persp']}; }}
 QLabel#invalidation {{ color: {t['risk']}; }}
+QLineEdit[invalid="true"] {{ border: 1px solid {t['risk']}; }}
 QLabel[muted="true"] {{ color: {t['muted']}; }}
 QLabel[statusKind="error"] {{ color: {t['fault']}; }}
 QLabel[statusKind="ok"] {{ color: {t['fresh']}; }}

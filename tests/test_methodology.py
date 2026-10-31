@@ -20,8 +20,8 @@ def series_for(tf_bars):
     return get, cache
 
 
-def test_catalog_has_20_profiles_with_f13_metadata_and_no_invented_timeframes():
-    assert len(PROFILES) == 20
+def test_catalog_has_21_profiles_with_f13_metadata_and_no_invented_timeframes():
+    assert len(PROFILES) == 21
     for p in PROFILES:
         d = p.as_dict()
         assert F13_FIELDS <= set(d)
@@ -130,3 +130,13 @@ def test_the_hybrid_tactical_layer_never_sees_bars_after_as_of():
     later = evaluate_perspectives(SAND, "1h", sel, get, as_of_ms=as_of)["perspectives"][0]["tactical_layer"]
     now = evaluate_perspectives(SAND, "1h", sel, cut, as_of_ms=as_of)["perspectives"][0]["tactical_layer"]
     assert later == now  # re-audit DATA-8: the tactical trend read the later, falling bars
+
+
+def test_playbook_profiles_on_crypto_are_extensions_with_evaluators():
+    from my_ai_trading.strategies import EVALUATORS
+    for mid in ("brandt", "edwards_magee"):
+        p = BY_ID[mid]
+        assert "crypto" not in p.published_assets and p.evaluator in EVALUATORS
+        a = assess(p, SAND, "1d")
+        assert a.evaluate and a.evaluation_timeframe == "1d"
+        assert any("extension" in r for r in a.reasons)

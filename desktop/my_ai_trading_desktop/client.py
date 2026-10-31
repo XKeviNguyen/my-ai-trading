@@ -542,6 +542,10 @@ class ApiClient:
     def usage(self) -> dict[str, Any]:
         return self.request("GET", "/api/v1/usage")
 
+    def risk_size(self, body: dict[str, str]) -> dict[str, Any]:
+        """Position size from a risk budget; decimal strings in and out (no market data, no orders)."""
+        return self.request("POST", "/api/v1/risk/size", json_body=body)
+
     def save_report(self, symbol: str, market: str, analysis_timeframe: str | None = None) -> dict[str, Any]:
         require_symbol(symbol, market)
         return self.request("POST", "/api/v1/reports",

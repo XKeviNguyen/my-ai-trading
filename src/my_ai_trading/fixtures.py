@@ -28,6 +28,20 @@ def candles_from_closes(closes: Sequence[float], timeframe: str = "1d", *, start
     return out
 
 
+def candles_from_ohlc(rows: Sequence[Sequence[float]], timeframe: str = "1d", *,
+                      start_ms: int | None = None) -> list[Candle]:
+    """Hand-built bars: each row is (open, high, low, close) or (open, high, low, close, volume)."""
+    tf = Timeframe(timeframe)
+    t = start_ms if start_ms is not None else (MONDAY_2024_12_30_MS if timeframe == "1w" else EPOCH_2025_MS)
+    out: list[Candle] = []
+    for row in rows:
+        o, h, lo, c = row[:4]
+        vol = row[4] if len(row) > 4 else 1_000_000.0
+        out.append(Candle(t, tf.next_open_ms(t) - 1, o, h, lo, c, vol, vol * c))
+        t = tf.next_open_ms(t)
+    return out
+
+
 def series_from_closes(closes: Sequence[float], timeframe: str = "1d", *,
                        instrument: InstrumentIdentity = DEMO_INSTRUMENT, **kw) -> CandleSeries:
     return CandleSeries(instrument, Timeframe(timeframe), tuple(candles_from_closes(closes, timeframe, **kw)))

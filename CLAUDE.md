@@ -27,3 +27,21 @@ Claude Code may use native subagents, teammate features or orchestrated CLI work
 ## First-session behavior
 
 Inspect `pwd`, `git status`, branch, files and local tools. Summarize verified repo state (see `docs/PROGRESS.md` and the latest audit in `docs/audits/`), the proposed minimal change and actual tests. Begin with **one implementer**; parallelize only independent **read-only** reviewers until interfaces are stable. Return: `Goal → Changed files → Commands/tests/results → Risks → Next step`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `XKeviNguyen/my-ai-trading` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` + `docs/adr/`, both created lazily. See `docs/agents/domain.md`.
+
+### Personal skills
+
+When installed, load these for matching work in this repo: `trading-playbook` (strategy, entry/stop/exit, position sizing), `concurrency-race-safety` (async, retries, duplicate events, workers), `testing-security-playbook` (test design and security tests) and `release-it-stability` (provider timeouts, failures, circuit breakers).

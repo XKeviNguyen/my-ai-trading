@@ -15,6 +15,8 @@ import type {
   StrategiesResponse,
   StrategyRule,
   ReportsResponse,
+  RiskSizeRequest,
+  RiskSizeResponse,
   UsageResponse,
   UserSettings,
   ConnectionMeta,
@@ -402,6 +404,10 @@ export class ApiClient {
     const after = Number.isInteger(afterSeq) && afterSeq >= 0 ? afterSeq : 0;
     return this.request("GET", "/api/v1/alerts", { query: { after_seq: after, limit } });
   }
+  async riskSize(body: RiskSizeRequest): Promise<RiskSizeResponse> {
+    return this.request<RiskSizeResponse>("POST", "/api/v1/risk/size", { json: body });
+  }
+
   async usage(): Promise<UsageResponse> {
     return this.request("GET", "/api/v1/usage");
   }

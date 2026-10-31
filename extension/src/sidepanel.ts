@@ -11,6 +11,7 @@ import { AnalysisView } from "./views/analysis.js";
 import { CopilotView } from "./views/copilot.js";
 import { MethodsView } from "./views/methods.js";
 import { ReportsView } from "./views/reports.js";
+import { RiskView } from "./views/risk.js";
 import { SettingsView } from "./views/settings.js";
 import { StudioView } from "./views/studio.js";
 import { UsageView } from "./views/usage.js";
@@ -54,6 +55,7 @@ tabButtons.forEach((btn, i) => {
 views.set("analysis", new AnalysisView($("panel-analysis"), app));
 views.set("copilot", new CopilotView($("panel-copilot"), app));
 views.set("studio", new StudioView($("panel-studio"), app));
+views.set("risk", new RiskView($("panel-risk"), app));
 views.set("accounts", new AccountsView($("panel-accounts"), app));
 views.set("alerts", new AlertsView($("panel-alerts"), app));
 views.set("reports", new ReportsView($("panel-reports"), app));

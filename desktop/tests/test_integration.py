@@ -46,8 +46,9 @@ def select_methodologies(port, token, selections):
 
 def test_tabs_and_accessibility_basics(window):
     assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == \
-        ["Analysis", "Copilot", "Strategy Studio", "Accounts", "Alerts", "Reports", "Methods", "Usage", "Settings"]
-    assert len(TAB_ORDER) == 9
+        ["Analysis", "Copilot", "Strategy Studio", "Risk", "Accounts", "Alerts", "Reports", "Methods", "Usage",
+         "Settings"]
+    assert len(TAB_ORDER) == 10
     assert window.symbol_edit.accessibleName() == "Symbol"
     assert window.tf_combo.findData("1M") >= 0
     assert window.minimumWidth() <= 360
@@ -176,8 +177,8 @@ def test_methods_usage_settings_reports_alerts(window, engine, tmp_path):
     port, token, _ = engine
     methods = window.views["methods"]
     window.select_tab("methods")
-    assert wait_until(lambda: len(methods.rows) == 20)
-    assert len(methods.list_box.findChildren(QCheckBox)) == 20
+    assert wait_until(lambda: len(methods.rows) == 21)
+    assert len(methods.list_box.findChildren(QCheckBox)) == 21
     methods.disable_all()
     methods.save()
     assert wait_until(lambda: "Saved: 0 methodologies selected." in texts(methods.msg))
@@ -289,3 +290,69 @@ def test_saving_methodology_settings_invalidates_the_analysis(window, engine):
     window.select_tab("analysis")
     assert wait_until(lambda: view.last_data is not None)
     assert "Methodology perspectives (0)" in texts(view.result)
+
+
+def test_risk_tab_sizes_a_position_and_shows_field_errors(window):
+    view = window.views["risk"]
+    window.select_tab("risk")
+    view.calculate()  # empty capital, entry and stop
+    assert "Capital: Capital is required." in texts(view.errors)
+    for key, value in {"capital": "100000", "risk_pct": "0.8", "entry": "20", "stop": "18", "target": "26"}.items():
+        view.edits[key].setText(value)
+    view.calculate()
+    assert wait_until(lambda: "Position size" in texts(view.result))
+    out = texts(view.result)
+    assert "400" in out and "800 (0.8% of capital)" in out and "3 : 1" in out
+    assert texts(view.errors) == ""
+
+
+def test_key_value_rows_are_never_clipped(qapp, window, engine):
+    # Regression: kv_form values kept their narrow wrapped width and lost their second line. It only shows with the
+    # theme, whose equal-width data font makes the values wider than the label's measured hint.
+    from PySide6.QtWidgets import QLabel
+    from my_ai_trading_desktop import theme
+    style, palette, font = qapp.styleSheet(), qapp.palette(), qapp.font()
+    theme.apply(qapp)
+    port, token, _ = engine
+    select_methodologies(port, token, [{"methodology_id": "brandt", "mode": "NATIVE"}])
+    window.resize(980, 900)
+    window.symbol_edit.setText("SANDUSDT")
+    window.apply_instrument()
+    window.select_tab("analysis")
+    view = window.views["analysis"]
+    assert wait_until(lambda: "Peter Brandt" in texts(view))
+    clipped = [lab.text() for lab in view.findChildren(QLabel)
+               if lab.isVisible() and lab.objectName() == "kv-value" and lab.wordWrap()
+               and lab.heightForWidth(lab.width()) > lab.height() + 1]
+    qapp.setStyleSheet(style)
+    qapp.setPalette(palette)
+    qapp.setFont(font)
+    assert clipped == []
+
+
+def test_arrow_keys_walk_through_the_risk_tab_without_getting_trapped(window):
+    # Regression: the Risk tab focused its first field on show, so arrow keys on the tab bar stopped there.
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    bar = window.tabs.tabBar()
+    window.select_tab("studio")
+    window.activateWindow()
+    bar.setFocus()
+    assert wait_until(lambda: QApplication.focusWidget() is bar, 3)
+    from PySide6.QtWidgets import QApplication, QLineEdit
+    for expected in ("risk", "accounts"):
+        QTest.keyClick(QApplication.focusWidget() or bar, Qt.Key.Key_Right)
+        assert TAB_ORDER[window.tabs.currentIndex()] == expected
+        assert not isinstance(QApplication.focusWidget(), QLineEdit)
+
+
+def test_risk_errors_are_tied_to_their_fields(window):
+    view = window.views["risk"]
+    view.edits["capital"].setText("abc")
+    view.calculate()
+    assert "positive number" in view.edits["capital"].accessibleDescription()
+    assert view.edits["capital"].property("invalid") is True
+    view.edits["capital"].setText("1000")
+    view.calculate()
+    assert view.edits["capital"].accessibleDescription() == ""

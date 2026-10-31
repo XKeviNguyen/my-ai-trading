@@ -5,7 +5,7 @@ import type { App, View } from "../app.js";
 import { badge, h, list, setChildren, status } from "../dom.js";
 import { fmtAge, fmtJson, fmtMs, fmtNum, statusLabel } from "../format.js";
 import { marketLabel } from "../symbol.js";
-import type { Alignment, AnalysisResponse, MarketEvent, Perspective, Snapshot, TimeframeReport, PatternDetection } from "../types.js";
+import type { Alignment, AnalysisResponse, MarketEvent, PatternDetection, Perspective, PlaybookPattern, Snapshot, TimeframeReport, TrackRecord } from "../types.js";
 
 export function tfTone(s: string | undefined): "ok" | "warn" | "err" | "muted" {
   if (s === "OK") return "ok";
@@ -104,6 +104,65 @@ const MATRIX_ROWS: Row[] = [
   ["Bar close UTC", (r) => (r.bar_close_time_utc ? fmtMs(Date.parse(r.bar_close_time_utc)).slice(5, 16) : "—"), true],
   ["Bar age", (r, now) => (r.bar_close_time_utc ? fmtAge(r.bar_close_time_utc, now) || "—" : "—")],
 ];
+
+function verdictTone(s: string): "ok" | "warn" | "err" | "muted" | "info" {
+  return s === "COMPLETED" ? "ok" : s === "FORMING" ? "info" : s === "PATTERN_FAILURE" ? "err" : "warn";
+}
+
+function pct(v: number | null | undefined): string {
+  return v === null || v === undefined ? "—" : `${(v * 100).toFixed(1)}%`;
+}
+
+/** Brandt / Edwards & Magee profile output: each pattern's verdict, the measured facts behind it and study levels. */
+export function playbookBlock(ev: Record<string, unknown>): HTMLElement | null {
+  const patterns = ev["patterns"] as PlaybookPattern[] | undefined;
+  const track = ev["track_record"] as TrackRecord | undefined;
+  if (!Array.isArray(patterns) || !patterns.length && !track) return null;
+  const primary = (ev["primary_trend"] as { state?: string } | undefined)?.state;
+  const items = patterns.map((p) => {
+    const q = p.quality;
+    const sc = p.scenario;
+    const ps = p.pivot_sensitivity;
+    const also = (p.verdict.unmet_labels ?? []).filter((u) => u !== p.verdict.label);
+    return h(
+      "li",
+      { class: "playbook-pattern" },
+      h("div", { class: "card-head" }, h("strong", null, p.pattern.replace(/_/g, " ").toLowerCase()),
+        badge(p.verdict.label ?? p.verdict.status, verdictTone(p.verdict.status))),
+      kv([
+        ["Break", q.direction ? `${q.direction}, ${(q.boundary_kind ?? "").toLowerCase()} side` : "none yet"],
+        ["Length", `${q.duration_weeks.toFixed(1)} weeks`],
+        ["Close beyond level", pct(q.close_beyond_pct)],
+        ["Volume vs 20 bars", q.volume_ratio === null ? "—" : `${q.volume_ratio.toFixed(2)}×`],
+        ...(p.signal_class ? [["Signal class", p.signal_class.replace(/_/g, " ").toLowerCase()] as [string, string]] : []),
+        ...(ps ? [["Pivot check", ps.robust === null || ps.robust === undefined ? "pending (needs 5 more bars)"
+          : ps.robust ? "found with 2, 3 and 4-bar pivots"
+          : `found with ${ps.found_with.join(", ") || "no"}-bar pivots only (fragile)`] as [string, string]] : []),
+        ...(sc ? [["Study levels", `level ${fmtNum(sc.level)} · stop ${sc.stop === null ? "—" : fmtNum(sc.stop)} · `
+          + `target ${sc.target === null ? "—" : fmtNum(sc.target)}`] as [string, string]] : []),
+        ...(sc?.pullback_zone_40_50 ? [["40–50% pullback zone",
+          `${fmtNum(sc.pullback_zone_40_50[0])} – ${fmtNum(sc.pullback_zone_40_50[1])}`] as [string, string]] : []),
+      ]),
+      also.length ? h("p", { class: "small muted" }, `Also unmet: ${also.join("; ")}`) : null,
+      invalidation(p.invalidation),
+    );
+  });
+  const trackLine = track
+    ? h("p", { class: "small track" }, track.resolved
+      ? `Earlier on this chart: ${track.target_first} of ${track.resolved} completed signals reached the target before `
+        + `the stop (${pct(track.target_first_rate)}; 95% range ${pct(track.target_first_rate_ci95?.[0])}–`
+        + `${pct(track.target_first_rate_ci95?.[1])}).`
+      : "No earlier completed signals of this profile on this chart to count.")
+    : null;
+  return h(
+    "details",
+    { open: patterns.some((p) => p.verdict.status === "COMPLETED") },
+    h("summary", null, `Playbook patterns (${patterns.length})${primary ? ` · weekly trend ${primary.toLowerCase()}` : ""}`),
+    trackLine,
+    patterns.length ? h("ul", { class: "plain" }, items) : h("p", { class: "small muted" }, "No recent patterns."),
+    h("p", { class: "small muted" }, "Study levels, not orders. Geometric detections also appear on random data."),
+  );
+}
 
 /** All timeframes side by side so values can be compared across a row. */
 export function timeframeMatrix(tfs: [string, TimeframeReport][], now: number): HTMLElement {
@@ -320,6 +379,7 @@ export class AnalysisView implements View {
             h("ul", { class: "plain" }, checks.map(([k, v]) => h("li", null, `${k}: ${fmtJson(v)}`))),
           )
         : null,
+      playbookBlock(ev),
       ev.unevaluated_criteria && ev.unevaluated_criteria.length
         ? h("details", null, h("summary", null, "Unevaluated criteria"), list(ev.unevaluated_criteria))
         : null,

@@ -6,6 +6,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from .client import IMAGE_TYPES, MAX_IMAGE_BYTES, SYMBOL_RE
@@ -566,3 +567,118 @@ def performance_rows(r: dict[str, Any]) -> list[tuple[str, str]]:
         ("Profit factor", text(r.get("profit_factor"))), ("Max drawdown", text(r.get("max_drawdown"))),
         ("Fees paid", text(r.get("fees_paid"))),
     ]
+
+
+# ---------- risk calculator (POST /api/v1/risk/size) ----------
+
+RISK_MAX_PCT = Decimal(2)
+RISK_NUM_RE = re.compile(r"^\d+(\.\d+)?$")
+RISK_FIELDS = (("capital", "Capital", "e.g. 25000"), ("risk_pct", "Risk per trade (%)", "0.5–1% default; cap 2%"),
+          ("entry", "Entry", "planned entry price"), ("stop", "Stop", "below entry = long, above = short"),
+          ("target", "Target", "optional, for reward : risk"), ("step", "Quantity step", "optional lot step"))
+
+
+def validate_risk(v: dict[str, str]) -> dict[str, str]:
+    """Field-level problems keyed by field name; empty when the inputs can be sent."""
+    errors: dict[str, str] = {}
+    nums: dict[str, Decimal] = {}
+    labels = {k: label for k, label, _ in RISK_FIELDS}
+    for key in ("capital", "risk_pct", "entry", "stop", "target", "step"):
+        raw = v.get(key, "").strip()
+        if not raw:
+            if key not in ("target", "step"):
+                errors[key] = f"{labels[key]} is required."
+            continue
+        if not RISK_NUM_RE.match(raw) or Decimal(raw) <= 0:
+            errors[key] = f"{labels[key]} must be a positive number, like 25000 or 0.8."
+            continue
+        nums[key] = Decimal(raw)
+    if nums.get("risk_pct", Decimal(0)) > RISK_MAX_PCT:
+        errors["risk_pct"] = "Risk per trade is capped at 2%."
+    elif "risk_pct" in nums and nums["risk_pct"] < Decimal("0.01"):
+        errors["risk_pct"] = "Risk per trade must be at least 0.01%."
+    e, s, t = nums.get("entry"), nums.get("stop"), nums.get("target")
+    if e is not None and s is not None and e == s:
+        errors["stop"] = "The stop must differ from the entry."
+    elif e is not None and s is not None and t is not None:
+        long = s < e
+        if (long and t <= e) or (not long and t >= e):
+            errors["target"] = ("For a long (stop below entry) the target must be above the entry." if long
+                                else "For a short (stop above entry) the target must be below the entry.")
+    return errors
+
+
+def risk_request(v: dict[str, str]) -> dict[str, str]:
+    body = {"capital": v["capital"].strip(), "entry": v["entry"].strip(), "stop": v["stop"].strip(),
+            "risk_fraction": format(Decimal(v["risk_pct"].strip()) / 100, "f")}
+    if v.get("target", "").strip():
+        body["target"] = v["target"].strip()
+    if v.get("step", "").strip():
+        body["quantity_step"] = v["step"].strip()
+    return body
+
+
+def risk_result_rows(r: dict[str, Any]) -> list[tuple[str, str]]:
+    def pct(x: Any) -> str:
+        return f"{Decimal(str(x)) * 100:.3f}".rstrip("0").rstrip(".") + "%"
+    rr = r.get("reward_risk")
+    return [("Side", "long (stop below entry)" if r.get("side") == "long" else "short (stop above entry)"),
+            ("Quantity", str(r.get("quantity"))),
+            ("Risk if stopped", f"{r.get('risk_amount')} ({pct(r.get('risk_fraction_used'))} of capital)"),
+            ("Risk budget", str(r.get("risk_budget"))), ("Risk per unit", str(r.get("risk_per_unit"))),
+            ("Stop distance", pct(r.get("stop_distance_fraction"))), ("Notional", str(r.get("notional"))),
+            ("Reward : risk", "add a target to see it" if rr is None else f"{rr} : 1")]
+
+
+# ---------- playbook profiles (Brandt, Edwards & Magee) ----------
+
+def _pct(v: Any) -> str:
+    return "—" if not isinstance(v, (int, float)) or isinstance(v, bool) else f"{v * 100:.1f}%"
+
+
+def track_record_text(t: Any) -> str | None:
+    if not isinstance(t, dict):
+        return None
+    n = t.get("resolved")
+    if not n:
+        return "No earlier completed signals of this profile on this chart to count."
+    ci = t.get("target_first_rate_ci95") or [None, None]
+    return (f"Earlier on this chart: {t.get('target_first')} of {n} completed signals reached the target before the "
+            f"stop ({_pct(t.get('target_first_rate'))}; 95% range {_pct(ci[0])}–{_pct(ci[1])}).")
+
+
+def playbook_pattern_rows(p: dict[str, Any]) -> tuple[str, list[tuple[str, str]], str]:
+    """(title, key/value rows, invalidation) for one playbook pattern; all text, no markup."""
+    q = p.get("quality") if isinstance(p.get("quality"), dict) else {}
+    v = p.get("verdict") if isinstance(p.get("verdict"), dict) else {}
+    title = f"{text(p.get('pattern')).replace('_', ' ').lower()} · {text(v.get('label'), text(v.get('status')))}"
+    weeks = q.get("duration_weeks")
+    vr = q.get("volume_ratio")
+    rows = [("Break", f"{q.get('direction')}, {text(q.get('boundary_kind'), '').lower()} side"
+             if q.get("direction") else "none yet"),
+            ("Length", f"{weeks:.1f} weeks" if isinstance(weeks, (int, float)) else "—"),
+            ("Close beyond level", _pct(q.get("close_beyond_pct"))),
+            ("Volume vs 20 bars", f"{vr:.2f}×" if isinstance(vr, (int, float)) else "—")]
+    if p.get("signal_class"):
+        rows.append(("Signal class", text(p.get("signal_class")).replace("_", " ").lower()))
+    ps = p.get("pivot_sensitivity")
+    if isinstance(ps, dict):
+        found = ", ".join(str(x) for x in ps.get("found_with") or []) or "no"
+        robust = ps.get("robust")
+        rows.append(("Pivot check", "pending (needs 5 more bars)" if robust is None
+                     else "found with 2, 3 and 4-bar pivots" if robust
+                     else f"found with {found}-bar pivots only (fragile)"))
+    sc = p.get("scenario")
+    if isinstance(sc, dict):
+        def num(x: Any) -> str:
+            return "—" if x is None else fmt_num(x)
+        rows.append(("Study levels", f"level {num(sc.get('level'))} · stop {num(sc.get('stop'))} · "
+                                     f"target {num(sc.get('target'))}"))
+        zone = sc.get("pullback_zone_40_50")
+        if isinstance(zone, list) and len(zone) == 2:
+            rows.append(("40–50% pullback zone", f"{num(zone[0])} – {num(zone[1])}"))
+    unmet = [u for u in (v.get("unmet_labels") or []) if isinstance(u, str) and u != v.get("label")]
+    if unmet:
+        rows.append(("Also unmet", "; ".join(unmet)))
+    return title, rows, text(p.get("invalidation"))
+

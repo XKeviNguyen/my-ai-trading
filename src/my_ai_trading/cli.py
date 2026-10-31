@@ -16,7 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="my-ai-trading", description="Read-only market research (no trading)")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("demo", help="offline analysis of SYNTHETIC data; no network")
-    sub.add_parser("methodologies", help="list the 20 methodology profiles and their status")
+    sub.add_parser("methodologies", help="list the 21 methodology profiles and their status")
     a = sub.add_parser("analyze", help="multi-timeframe analysis from public Binance data")
     a.add_argument("--symbol", default="SANDUSDT")
     a.add_argument("--market", default="usdm_perpetual", choices=["usdm_perpetual", "spot"])

@@ -33,6 +33,23 @@ Fail-closed data rules:
   gap and bars already present; nothing skips a signal because of a gap further in the future.
 - A trade still open at the end of the data (or fold) is reported as ``open_at_end`` and excluded
   from metrics; it keeps blocking new entries, so truncating the data never changes earlier trades.
+
+Playbook options (spec: docs/specs/trading-playbook-features.md, Feature 5); defaults keep the behavior above:
+- Per-signal ``plans`` may carry a structural ``stop`` (e.g. Brandt's Last Day Rule) and a ``target``. A plan
+  stop replaces the ATR stop; a signal whose next open is already beyond its plan stop is skipped. A target
+  exits at the target price (never better, even on a gap), checked after the stop in the same bar.
+- ``exit_policy="trailing_three_day"``: Brandt's Trailing Stop Rule on held bars (``stops.TrailingStopRule``,
+  the same code the stop library reports). The peak bar is the highest high since entry; the setup bar is the
+  first later bar to CLOSE below the peak bar's low; from the next bar on, trading below the setup bar's low
+  exits at that level (or the worse open). A new peak drops the trigger until a new setup bar.
+- ``sizing="fixed_risk"``: each trade risks ``risk_fraction`` of equity at its stop, counting the round-trip
+  fees and the exit slippage, so the position is risk_fraction / (stop distance + costs) of equity, capped at
+  100% (no leverage). A gap through the stop can still lose more. Signals without a positive stop distance are
+  skipped. Per-trade returns (gross, net, average win/loss) stay per unit of notional; ``equity_return`` is
+  the trade's effect on equity and the compounded figures use it. Every trade reports R = net return / stop
+  distance; metrics add average R, the longest losing streak and the share of net profit from the best 10%.
+- Entries still fill at the next open after a CLOSED-bar signal. Brandt enters with resting stop orders at the
+  boundary; that fill model is not implemented, so playbook results approximate his entries.
 """
 from __future__ import annotations
 
@@ -40,7 +57,7 @@ import statistics
 import threading
 from bisect import bisect_left
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from math import isfinite, prod
 from typing import Any, Iterator, Literal, Mapping, Sequence
 
@@ -49,7 +66,9 @@ from .engine import (BREAKOUT_VOLUME_RATIO, CONTRACTION_BASE, CONTRACTION_RATIO,
                      PIVOT_LOOKBACK, RECLAIM_PERIODS, TREND_SLOPE_BARS, UNUSUAL_VOLUME_RATIO, trend_state, utc_iso)
 from .indicators import (bollinger, ema_series, prior_high, prior_low, sma, sma_series, true_ranges,
                          volume_ratio)
+from .playbook import PROFILES as PLAYBOOK_PROFILES, pattern_signals, wilson_interval
 from .rules import AllOf, AnyOf, MetricRef, Not, StrategyRule, Trend
+from .stops import TrailingStopRule
 
 BACKTEST_VERSION = "backtest/0.1.0"
 LABEL = "HYPOTHETICAL — research backtest, not live or audited performance"
@@ -61,9 +80,21 @@ ENGINE_EVENT_TYPES = frozenset(
      "VOLATILITY_CONTRACTION"}
     | {f"SMA{n}_{k}" for n in RECLAIM_PERIODS for k in ("RECLAIM", "LOSS")})
 METRICS_NOTE = ("Per-trade statistics of a hypothetical replay; win rate is a historical frequency in this "
-                "sample, not a probability of future wins. No annualised ratios are reported.")
+                "sample, not a probability of future wins. No annualised ratios are reported. Sums and average "
+                "win/loss are per unit of notional; compounded returns include position sizing.")
 
-Source = StrategyRule | str  # a typed rule, or an engine event type such as "BREAKOUT"
+@dataclass(frozen=True)
+class PlaybookSource:
+    """Completed chart-pattern breakouts judged by a trading-playbook profile (``playbook.py``), with each
+    signal's structural stop and measured target. The trade direction comes from ``BacktestConfig``."""
+    profile_id: str
+
+    def __post_init__(self) -> None:
+        if self.profile_id not in PLAYBOOK_PROFILES:
+            raise ValueError(f"unknown playbook profile {self.profile_id!r}")
+
+
+Source = StrategyRule | str | PlaybookSource  # a typed rule, an engine event type such as "BREAKOUT", or a profile
 
 
 def _finite(name: str, v: Any, *, minimum: float | None = None) -> None:
@@ -82,6 +113,9 @@ class BacktestConfig:
     funding_rate_per_8h: float = 0.0  # e.g. 0.0001 = 0.01% per 8h; longs pay when positive
     stop_atr_mult: float | None = None
     exit_on_rule_false: bool = False
+    exit_policy: Literal["hold", "trailing_three_day"] = "hold"
+    sizing: Literal["full_equity", "fixed_risk"] = "full_equity"
+    risk_fraction: float = 0.008
 
     def __post_init__(self) -> None:
         if isinstance(self.hold_bars, bool) or not isinstance(self.hold_bars, int) or self.hold_bars < 1:
@@ -97,12 +131,21 @@ class BacktestConfig:
                 raise ValueError("stop_atr_mult must be > 0")
         if not isinstance(self.exit_on_rule_false, bool):
             raise ValueError("exit_on_rule_false must be a bool")
+        if self.exit_policy not in ("hold", "trailing_three_day"):
+            raise ValueError("exit_policy must be 'hold' or 'trailing_three_day'")
+        if self.sizing not in ("full_equity", "fixed_risk"):
+            raise ValueError("sizing must be 'full_equity' or 'fixed_risk'")
+        _finite("risk_fraction", self.risk_fraction)
+        if not 0 < self.risk_fraction <= 0.02:
+            raise ValueError("risk_fraction must be > 0 and <= 0.02 (2% hard cap per trade)")
 
     def assumptions(self) -> dict[str, Any]:
         return {
             **asdict(self),
             "initial_equity": 1.0,
-            "position_size": "100% of current equity notional, no leverage, one position at a time",
+            "position_size": ("100% of current equity notional" if self.sizing == "full_equity" else
+                              "risk_fraction of equity at the stop, notional capped at 100% of equity")
+                             + ", no leverage, one position at a time",
             "compounding": "equity compounds trade to trade; sum of per-trade net returns also reported",
             "entry": "open of the bar after the signal bar, worsened by slippage",
             "exit": "close of bar signal+hold_bars; stop at stop price (or worse open); rule-false exit at next open",
@@ -476,13 +519,17 @@ def _trade_returns(sign: int, entry_open: float, exit_raw: float, entry_ms: int,
 
 
 def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfig, *,
-             start: int = 0, end: int | None = None) -> dict[str, Any]:
-    """Replay ``signals`` over bars ``[start, end)``; no trade bar may lie outside the window."""
+             start: int = 0, end: int | None = None,
+             plans: Sequence[Mapping[str, Any] | None] | None = None) -> dict[str, Any]:
+    """Replay ``signals`` over bars ``[start, end)``; no trade bar may lie outside the window.
+    ``plans`` (one per bar, or None) may give a signal its own ``stop`` and ``target``."""
     candles = series.candles
     n = len(candles)
     end = n if end is None else end
     if len(signals) != n:
         raise ValueError("signals must have one entry per candle")
+    if plans is not None and len(plans) != n:
+        raise ValueError("plans must have one entry per candle")
     if not 0 <= start <= end <= n:
         raise ValueError("invalid window")
     cfg = config
@@ -496,6 +543,8 @@ def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfi
 
     counts = {"match": 0, "no_match": 0, "insufficient_data": 0, "ignored_in_position": 0,
               "skipped_gap_before_entry": 0, "skipped_no_atr": 0, "no_next_bar": 0}
+    if plans is not None or cfg.sizing == "fixed_risk":
+        counts.update(skipped_no_stop=0, skipped_stop_beyond_entry=0, skipped_target_beyond_entry=0)
     trades: list[dict[str, Any]] = []
     curve: list[float] = []
     equity, bars_in_pos = 1.0, 0
@@ -505,10 +554,13 @@ def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfi
         nonlocal equity, pos
         assert pos is not None
         r = _trade_returns(sign, pos["entry_open"], raw, pos["entry_ms"], exit_ms, cfg)
-        equity *= 1 + r["net_return"]
-        trades.append({**{k: v for k, v in pos.items() if k not in ("entry_ms", "pending_rule_exit")},
+        equity *= 1 + pos["fraction"] * r["net_return"]
+        extra = {"equity_return": pos["fraction"] * r["net_return"]}
+        if pos["stop_distance"] is not None:
+            extra["r_multiple"] = r["net_return"] / pos["stop_distance"]
+        trades.append({**{k: v for k, v in pos.items() if k not in _INTERNAL},
                        "exit_idx": j, "exit_kind": kind, "exit_raw": raw,
-                       "exit_time_utc": utc_iso(exit_ms), "bars_held": j - pos["entry_idx"] + 1, **r})
+                       "exit_time_utc": utc_iso(exit_ms), "bars_held": j - pos["entry_idx"] + 1, **r, **extra})
         pos = None
 
     for j in range(start, end):
@@ -516,22 +568,31 @@ def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfi
         if pos is not None and pos["entry_idx"] <= j:
             bars_in_pos += 1
             stop = pos["stop_level"]
+            trail = pos["trail"]
+            target = pos["target"]
             if pos["pending_rule_exit"]:
                 close(j, "rule_false", c.open, c.open_time_ms)
             elif stop is not None and sign == 1 and c.low <= stop:
                 close(j, "stop", min(stop, c.open), c.close_time_ms + 1)
             elif stop is not None and sign == -1 and c.high >= stop:
                 close(j, "stop", max(stop, c.open), c.close_time_ms + 1)
+            elif trail is not None and trail.hit(c):
+                t = trail.trigger
+                close(j, "trailing_stop", min(t, c.open) if sign == 1 else max(t, c.open), c.close_time_ms + 1)
+            elif target is not None and sign * ((c.high if sign == 1 else c.low) - target) >= 0:
+                close(j, "target", target, c.close_time_ms + 1)
             elif j == pos["scheduled_exit_idx"]:
                 close(j, "hold", c.close, c.close_time_ms + 1)
             elif j + 1 < end and not adjacent(j):
                 close(j, "gap", c.close, c.close_time_ms + 1)
             elif cfg.exit_on_rule_false and signals[j] == NO_MATCH:
                 pos["pending_rule_exit"] = True
+            if pos is not None and pos["trail"] is not None:
+                pos["trail"].update(c)
         if pos is not None and pos["entry_idx"] <= j:
             unreal = (sign * (c.close - pos["entry_fill"]) / pos["entry_fill"] - f
                       - sign * cfg.funding_rate_per_8h * (c.close_time_ms + 1 - pos["entry_ms"]) / EIGHT_HOURS_MS)
-            curve.append(pos["equity_before"] * (1 + unreal))
+            curve.append(pos["equity_before"] * (1 + pos["fraction"] * unreal))
         else:
             curve.append(equity)
 
@@ -550,28 +611,57 @@ def simulate(series: CandleSeries, signals: Sequence[str], config: BacktestConfi
         elif not adjacent(j):
             counts["skipped_gap_before_entry"] += 1
         else:
+            plan = plans[j] if plans is not None else None
+            plan_stop = plan.get("stop") if plan else None
             atr = None
-            if cfg.stop_atr_mult is not None:
+            if cfg.stop_atr_mult is not None and plan_stop is None:
                 if atr_at is None:
                     atr_at = _Prefix(series).array("atr_wilder", ATR_PERIOD)
                 atr = atr_at[j]
-                if atr is None:
+                if atr is None or atr <= 0:
                     counts["skipped_no_atr"] += 1
                     continue
             nxt = candles[j + 1]
             entry_fill = nxt.open * (1 + sign * cfg.slippage_bps / 1e4)
+            stop_level = plan_stop if plan_stop is not None else (
+                None if atr is None else entry_fill - sign * cfg.stop_atr_mult * atr)
+            if plan_stop is not None and sign * (nxt.open - plan_stop) <= 0:
+                counts["skipped_stop_beyond_entry"] += 1
+                continue
+            plan_target = plan.get("target") if plan else None
+            if plan_target is not None and sign * (plan_target - entry_fill) <= 0:
+                counts["skipped_target_beyond_entry"] += 1  # the reward is already gone at the next open
+                continue
+            dist = None if stop_level is None else abs(entry_fill - stop_level) / entry_fill
+            if cfg.sizing == "fixed_risk" and not dist:
+                counts["skipped_no_stop"] += 1
+                continue
+            fraction = 1.0
+            if cfg.sizing == "fixed_risk":
+                assert dist is not None
+                # Loss per unit of notional at a no-gap stop, for the worse (short) side: the move, exit slippage on
+                # (1 + dist), and fees on entry plus the slipped exit notional. Exact for a short, conservative for a long.
+                f_, s_ = cfg.fee_bps / 1e4, cfg.slippage_bps / 1e4
+                costs = s_ * (1 + dist) + f_ * (2 + dist + s_ * (1 + dist))
+                fraction = min(1.0, cfg.risk_fraction / (dist + costs))
             pos = {"signal_idx": j, "signal_bar_close_utc": utc_iso(c.close_time_ms + 1),
                    "entry_idx": j + 1, "entry_time_utc": utc_iso(nxt.open_time_ms),
                    "entry_ms": nxt.open_time_ms, "entry_open": nxt.open, "entry_fill": entry_fill,
                    "scheduled_exit_idx": j + cfg.hold_bars, "atr_at_signal": atr,
-                   "stop_level": None if atr is None else entry_fill - sign * cfg.stop_atr_mult * atr,
-                   "equity_before": equity, "pending_rule_exit": False}
+                   "stop_level": stop_level, "equity_before": equity, "pending_rule_exit": False,
+                   "target": plan_target, "fraction": fraction, "stop_distance": dist,
+                   "trail": TrailingStopRule(cfg.direction) if cfg.exit_policy == "trailing_three_day" else None}
+            if plan:
+                pos["plan"] = dict(plan)
 
     open_at_end = None
     if pos is not None:
-        open_at_end = {k: v for k, v in pos.items() if k not in ("entry_ms", "pending_rule_exit")}
+        open_at_end = {k: v for k, v in pos.items() if k not in _INTERNAL}
     return {"trades": trades, "open_at_end": open_at_end, "signal_counts": counts,
             "equity_curve": curve, "metrics": metrics(trades, curve, bars_in_pos, end - start)}
+
+
+_INTERNAL = frozenset({"entry_ms", "pending_rule_exit", "trail"})
 
 
 def _max_drawdown(curve: Sequence[float]) -> float:
@@ -593,8 +683,8 @@ def metrics(trades: Sequence[dict[str, Any]], curve: Sequence[float], bars_in_po
         "n_trades": len(trades),
         "sum_gross_return": sum(t["gross_return"] for t in trades),
         "sum_net_return": sum(nets),
-        "compounded_gross_return": prod(1 + t["gross_return"] for t in trades) - 1,
-        "compounded_net_return": prod(1 + x for x in nets) - 1,
+        "compounded_gross_return": prod(1 + t.get("fraction", 1.0) * t["gross_return"] for t in trades) - 1,
+        "compounded_net_return": prod(1 + t.get("equity_return", t["net_return"]) for t in trades) - 1,
         "win_rate": len(wins) / len(nets) if nets else None,
         "avg_win": statistics.fmean(wins) if wins else None,
         "avg_loss": statistics.fmean(losses) if losses else None,
@@ -602,8 +692,30 @@ def metrics(trades: Sequence[dict[str, Any]], curve: Sequence[float], bars_in_po
         "max_drawdown": _max_drawdown(curve),
         "exposure": bars_in_pos / n_bars if n_bars else 0.0,
         "costs_paid": {"fees": fees, "slippage": slip, "funding": fund, "total": fees + slip + fund},
+        "max_consecutive_losses": _longest_losing_streak(nets),
+        **_r_metrics(trades),
         "note": METRICS_NOTE,
     }
+
+
+def _longest_losing_streak(nets: Sequence[float]) -> int:
+    best = run = 0
+    for x in nets:
+        run = run + 1 if x <= 0 else 0
+        best = max(best, run)
+    return best
+
+
+def _r_metrics(trades: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Average R and how much of the net profit came from the best 10% of trades (Brandt's "bottom liners")."""
+    rs = [t["r_multiple"] for t in trades if "r_multiple" in t]
+    if not rs:
+        return {}
+    contrib = sorted((t.get("equity_return", t["net_return"]) for t in trades), reverse=True)
+    total = sum(contrib)
+    top = contrib[:max(1, len(contrib) // 10)]
+    return {"avg_r": statistics.fmean(rs), "trades_with_r": len(rs),
+            "top_decile_share_of_net": sum(top) / total if total > 0 else None}
 
 
 def _gap_report(series: CandleSeries) -> list[dict[str, Any]]:
@@ -613,7 +725,11 @@ def _gap_report(series: CandleSeries) -> list[dict[str, Any]]:
 
 def _header(source: Source, series: CandleSeries, config: BacktestConfig) -> dict[str, Any]:
     src = ({"kind": "rule", "name": source.name, "rule_hash": source.rule_hash()}
-           if isinstance(source, StrategyRule) else {"kind": "engine_event", "event_type": source})
+           if isinstance(source, StrategyRule) else
+           {"kind": "playbook", "profile": source.profile_id, "direction": config.direction,
+            "fill_note": "entries fill at the next open after the breakout close; the profile's resting "
+                         "stop-order entry is not modeled"}
+           if isinstance(source, PlaybookSource) else {"kind": "engine_event", "event_type": source})
     return {"label": LABEL, "backtest_version": BACKTEST_VERSION, "source": src,
             "instrument": series.instrument.as_dict(), "timeframe": series.timeframe.code,
             "bars": len(series.candles), "cost_assumptions": config.assumptions(),
@@ -626,8 +742,58 @@ def run_backtest(source: Source, series: CandleSeries, config: BacktestConfig, *
     """Backtest a rule or engine event over ``series``. Precomputed ``signals`` may be passed.
     Raises ``BacktestBusyError`` when ``MAX_CONCURRENT_BACKTESTS`` are already running."""
     with backtest_slot():
-        sig = list(signals) if signals is not None else compute_signals(source, series, other_series=other_series)
-        return {**_header(source, series, config), **simulate(series, sig, config)}
+        sig, plans = _signals_and_plans(source, series, config, other_series, signals)
+        result = simulate(series, sig, config, plans=plans)
+        return {**_header(source, series, config), **result,
+                "robustness": robustness(series, sig, config, result, plans=plans)}
+
+
+MIN_TRADES_FOR_STATISTICS = 30
+COST_STRESS = 2.0
+
+
+def robustness(series: CandleSeries, signals: Sequence[str], config: BacktestConfig, result: Mapping[str, Any], *,
+               plans: Sequence[Mapping[str, Any] | None] | None = None) -> dict[str, Any]:
+    """How much the headline result depends on costs, sample size and the market's own drift: the same signals
+    replayed with zero costs and with doubled costs, a hold-the-whole-window baseline, and a 95% interval on
+    the win rate. Each replay is one more linear pass over the bars."""
+    m = result["metrics"]
+    zero = replace(config, fee_bps=0.0, slippage_bps=0.0, funding_rate_per_8h=0.0)
+    stress = replace(config, fee_bps=config.fee_bps * COST_STRESS, slippage_bps=config.slippage_bps * COST_STRESS,
+                     funding_rate_per_8h=config.funding_rate_per_8h * COST_STRESS)
+    zero_ret = simulate(series, signals, zero, plans=plans)["metrics"]["compounded_net_return"]
+    stress_ret = simulate(series, signals, stress, plans=plans)["metrics"]["compounded_net_return"]
+    c = series.candles
+    hold = None
+    if len(c) >= 2:
+        sign = 1 if config.direction == "long" else -1
+        hold = sign * (c[-1].close - c[0].open) / c[0].open - 2 * config.fee_bps / 1e4
+    n, wins = m["n_trades"], round((m["win_rate"] or 0) * m["n_trades"])
+    ci = wilson_interval(wins, n)
+    warnings = []
+    if n < MIN_TRADES_FOR_STATISTICS:
+        warnings.append(f"only {n} trades; fewer than {MIN_TRADES_FOR_STATISTICS} is too few to tell skill from luck")
+    if n and m["compounded_net_return"] <= 0 < zero_ret:
+        warnings.append("profitable before costs but not after them: the edge is smaller than the costs")
+    if hold is not None and m["compounded_net_return"] < hold:
+        warnings.append(f"holding {config.direction} for the whole window did better than these signals")
+    return {"compounded_net_return": m["compounded_net_return"], "zero_cost_return": zero_ret,
+            "double_cost_return": stress_ret, "hold_window_return": hold,
+            "win_rate_ci95": None if ci is None else [round(ci[0], 4), round(ci[1], 4)],
+            "warnings": warnings,
+            "note": "Same signals, different assumptions. The hold baseline uses the first open and last close of "
+                    "the window with one round-trip fee; it ignores funding."}
+
+
+def _signals_and_plans(source: Source, series: CandleSeries, config: BacktestConfig,
+                       other_series: Mapping[str, CandleSeries] | None,
+                       signals: Sequence[str] | None) -> tuple[list[str], list[Any] | None]:
+    if isinstance(source, PlaybookSource):
+        if signals is not None:
+            raise ValueError("a playbook source computes its own signals and plans")
+        return pattern_signals(series, source.profile_id, config.direction)
+    sig = list(signals) if signals is not None else compute_signals(source, series, other_series=other_series)
+    return sig, None
 
 
 def walk_forward(source: Source, series: CandleSeries, config: BacktestConfig, *, n_folds: int = 4,
@@ -654,12 +820,12 @@ def _walk_forward(source: Source, series: CandleSeries, config: BacktestConfig, 
     seg = n // (n_folds + 1)
     if seg <= embargo:
         raise ValueError("series too short for this many folds and embargo")
-    sig = list(signals) if signals is not None else compute_signals(source, series, other_series=other_series)
+    sig, plans = _signals_and_plans(source, series, config, other_series, signals)
     candles, folds = series.candles, []
     for i in range(1, n_folds + 1):
         is_end, test_start = i * seg, i * seg + embargo
         test_end = (i + 1) * seg if i < n_folds else n
-        res = simulate(series, sig, config, start=test_start, end=test_end)
+        res = simulate(series, sig, config, start=test_start, end=test_end, plans=plans)
         folds.append({
             "fold": i, "in_sample": [0, is_end], "embargo": [is_end, test_start], "test": [test_start, test_end],
             "test_from_utc": utc_iso(candles[test_start].open_time_ms),

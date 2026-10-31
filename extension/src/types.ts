@@ -385,6 +385,68 @@ export interface ReportsResponse {
   reports: ReportSummary[];
 }
 
+/** POST /api/v1/risk/size: decimal strings in and out, so nothing is rounded by JSON floats. */
+export interface RiskSizeRequest {
+  capital: string;
+  entry: string;
+  stop: string;
+  target?: string;
+  risk_fraction?: string;
+  point_value?: string;
+  quantity_step?: string;
+}
+
+export interface RiskSizeResponse {
+  side: "long" | "short";
+  quantity: string;
+  risk_budget: string;
+  risk_per_unit: string;
+  risk_amount: string;
+  risk_fraction_used: string;
+  notional: string;
+  stop_distance_fraction: string;
+  reward_risk: string | null;
+  reason?: string;
+  note: string;
+}
+
+/** Playbook profile output inside a perspective evaluation (Brandt, Edwards & Magee). */
+export interface PlaybookPattern {
+  pattern: string;
+  state: string;
+  end_bar_open_ms: number;
+  invalidation: string;
+  quality: {
+    direction: string | null;
+    boundary_kind: string | null;
+    duration_weeks: number;
+    close_beyond_pct: number | null;
+    volume_ratio: number | null;
+    completion: string | null;
+  };
+  verdict: { status: string; label?: string; unmet: string[]; unmet_labels?: string[]; major: boolean; pattern_failure: boolean };
+  signal_class?: string;
+  scenario?: {
+    side: string;
+    level: number;
+    stop: number | null;
+    target: number | null;
+    reward_risk_from_last_close: number | null;
+    pullback_zone_40_50?: [number, number];
+  };
+  pivot_sensitivity?: { pivot_bars_tried: number[]; found_with: number[]; robust: boolean | null; state?: string };
+}
+
+export interface TrackRecord {
+  resolved: number;
+  target_first: number;
+  stop_first: number;
+  target_first_rate: number | null;
+  target_first_rate_ci95: [number, number] | null;
+  max_bars: number;
+  note: string;
+}
+
 export interface UsageResponse {
   since_ms: number;
   cache_hits?: number;

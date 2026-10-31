@@ -10,7 +10,11 @@ from typing import Any, Callable
 from .domain import CandleSeries
 from .engine import utc_iso
 from .indicators import adx, ema, prior_high, prior_low, sma, true_ranges
-from .patterns import recent_patterns
+from .patterns import SWING_RIGHT, detect_candles, swing_points
+from .playbook import (PROFILES as PLAYBOOK, WEEK_MS, assess_detections, measured_height, nearest_minor_swing,
+                       pivot_sensitivity,
+                       swing_trend, track_record, weekly_from_daily)
+from .stops import basing_points, last_day_rule
 
 # Calendar model: crypto trades 24x7, so 52 weeks = 364 daily bars and one month ≈ 30 daily bars.
 # Equity sources use ~252 sessions/year; that calendar is not implemented yet.
@@ -264,25 +268,139 @@ def raschke_holy_grail(series: CandleSeries) -> dict[str, Any]:
 
 
 BRANDT_KINDS = {"HEAD_AND_SHOULDERS", "INVERSE_HEAD_AND_SHOULDERS", "ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE",
-                "SYMMETRICAL_TRIANGLE", "RISING_WEDGE", "FALLING_WEDGE", "BULL_FLAG", "BEAR_FLAG"}
+                "SYMMETRICAL_TRIANGLE", "RISING_WEDGE", "FALLING_WEDGE", "BULL_FLAG", "BEAR_FLAG", "RECTANGLE",
+                "DOUBLE_TOP", "DOUBLE_BOTTOM"}
 BRANDT_RECENT_BARS = 10
+PLAYBOOK_MIN_BARS = 30
+
+
+def _recent_assessed(series: CandleSeries, profile_id: str) -> tuple[tuple, list[dict[str, Any]]]:
+    """Profile-judged detections still forming or resolved within the last ``BRANDT_RECENT_BARS`` bars."""
+    tail = series.contiguous_tail()
+    cutoff = tail[max(0, len(tail) - BRANDT_RECENT_BARS)].open_time_ms
+    found = [d for d in detect_candles(tail, kinds=BRANDT_KINDS)
+             if d["state"] == "FORMING" or d["end_bar_open_ms"] >= cutoff]
+    return tail, assess_detections(found, tail, PLAYBOOK[profile_id])
+
+
+def _scenario(d: dict[str, Any], tail: tuple, stop: float | None) -> dict[str, Any]:
+    """Study levels of a completed break: level, stop, measured target and reward/risk."""
+    q, h = d["quality"], measured_height(d)
+    sign = 1 if q["direction"] == "up" else -1
+    target = None if h is None else q["level"] + sign * h
+    close = tail[-1].close
+    rr = None
+    if stop is not None and target is not None and sign * (close - stop) > 0 and sign * (target - close) > 0:
+        rr = round(abs(target - close) / abs(close - stop), 4)
+    return {"side": "long" if sign == 1 else "short", "level": q["level"], "stop": stop, "target": target,
+            "reward_risk_from_last_close": rr,
+            "note": "Study levels on closed bars; not an order instruction."}
+
+
+def _brief(d: dict[str, Any], tail: tuple) -> dict[str, Any]:
+    out = {**{k: d[k] for k in ("pattern", "state", "end_bar_open_ms", "key_levels", "invalidation")},
+           "quality": d["quality"], "verdict": d["verdict"]}
+    q = d["quality"]
+    if q["direction"] is not None:  # after a break, the detector's pre-break wording no longer applies
+        out["invalidation"] = (f"a close back {'below' if q['direction'] == 'up' else 'above'} {q['level']:g} "
+                               "(back inside the pattern)")
+    if d["state"] != "FORMING":
+        out["pivot_sensitivity"] = pivot_sensitivity(tail, d)
+    return out
 
 
 def brandt_classical_patterns(series: CandleSeries) -> dict[str, Any]:
-    """Recent classical chart patterns (geometric detectors) on daily bars, with their invalidation."""
-    out = _base(series, "brandt_classical_patterns", "1")
+    """Recent classical chart patterns judged by the ``brandt`` playbook profile (spec §3.1).
+
+    A completed break is MAJOR_BREAKOUT when the pattern lasted at least ``major_weeks`` (long enough to show on a
+    weekly chart), else MINOR; the class is fixed at the signal bar. ``weekly_close_confirmed`` then reports, as of
+    the newest bar, whether the weekly bar containing the signal day closed beyond the level: true, false, or
+    "PENDING" while that week is still open. Weekly bars are complete UTC weeks resampled from the daily bars.
+    Stops use the Last Day Rule. A break against the pattern's expected side (H&S or triangle failure) is reported
+    as PATTERN_FAILURE, without a scenario."""
+    out = _base(series, "brandt_classical_patterns", "2")
     if series.timeframe.code != "1d":
         raise ValueError("Classical patterns are evaluated here on daily bars")
-    if len(series.contiguous_tail()) < 30:
-        out.update(state="INSUFFICIENT_DATA", reason="needs 30+ contiguous daily bars")
+    if len(series.contiguous_tail()) < PLAYBOOK_MIN_BARS:
+        out.update(state="INSUFFICIENT_DATA", reason=f"needs {PLAYBOOK_MIN_BARS}+ contiguous daily bars")
         return out
-    found = [d for d in recent_patterns(series, bars=BRANDT_RECENT_BARS) if d["pattern"] in BRANDT_KINDS]
-    out.update(state="PATTERNS_PRESENT" if found else "NO_RECENT_PATTERN",
-               patterns=[{k: d[k] for k in ("pattern", "state", "end_bar_open_ms", "key_levels", "invalidation")}
-                         for d in found],
-               note="Brandt's pattern reading is discretionary; these are geometric detections, which also fire on "
-                    "random data. Weekly context is not combined here.",
-               unevaluated_criteria=["weekly chart confirmation", "pattern quality judgment", "trade management"])
+    cfg = PLAYBOOK["brandt"]
+    tail, found = _recent_assessed(series, "brandt")
+    weeks = weekly_from_daily(tail)
+    patterns = []
+    for d in found:
+        item = _brief(d, tail)
+        if d["verdict"]["status"] == "COMPLETED":
+            i, b = d["signal_index"], d["breakout_index"]
+            sign = 1 if d["quality"]["direction"] == "up" else -1
+            day = tail[i].open_time_ms
+            week = next((w for w in weeks if w.open_time_ms <= day < w.open_time_ms + WEEK_MS), None)
+            item["signal_class"] = "MAJOR_BREAKOUT" if d["verdict"]["major"] else "MINOR"
+            item["weekly_close_confirmed"] = "PENDING" if week is None else sign * (week.close - d["quality"]["level"]) > 0
+            stop = last_day_rule(tail, b, "long" if d["quality"]["direction"] == "up" else "short",
+                                 d["quality"]["level"]) if b > 0 else None
+            item["scenario"] = _scenario(d, tail, None if stop is None else stop.price)
+            item["scenario"]["stop_rule"] = None if stop is None else stop.as_dict()
+        patterns.append(item)
+    completed = [p for p in patterns if p["verdict"]["status"] == "COMPLETED"]
+    out.update(state="COMPLETED_BREAKS" if completed else "PATTERNS_PRESENT" if patterns else "NO_RECENT_PATTERN",
+               patterns=patterns, profile=cfg.as_dict(), weekly_bars_used=len(weeks),
+               track_record=track_record(series, "brandt"),
+               note="Brandt's pattern reading is discretionary; these are geometric detections judged by explicit "
+                    "rules, and they also fire on random data. Entries fill at a stop order in his method; the "
+                    "levels here are for study.",
+               unevaluated_criteria=["pattern quality judgment ('one of the best examples this year')",
+                                     "intraday Last Hour Rule (needs 1h bars)", "Weekend Rule (24x7 market)",
+                                     "trade management after entry"])
+    return out
+
+
+def edwards_magee_trend_and_patterns(series: CandleSeries) -> dict[str, Any]:
+    """Dow-style primary trend on weekly bars plus daily patterns judged by the ``edwards_magee`` profile
+    (spec §3.2): close >= 3% beyond the boundary, volume on upside breaks, a 40-50% pullback zone of the leg from the
+    last opposite swing, a stop at the nearest minor swing, and the latest basing point to trail it."""
+    out = _base(series, "edwards_magee_trend_and_patterns", "1")
+    if series.timeframe.code != "1d":
+        raise ValueError("Edwards & Magee patterns are evaluated here on daily bars")
+    if len(series.contiguous_tail()) < PLAYBOOK_MIN_BARS:
+        out.update(state="INSUFFICIENT_DATA", reason=f"needs {PLAYBOOK_MIN_BARS}+ contiguous daily bars")
+        return out
+    cfg = PLAYBOOK["edwards_magee"]
+    tail, found = _recent_assessed(series, "edwards_magee")
+    weeks = weekly_from_daily(tail)
+    primary = swing_trend(weeks)
+    patterns = []
+    for d in found:
+        item = _brief(d, tail)
+        q = d["quality"]
+        if d["verdict"]["status"] == "COMPLETED":
+            i = d["breakout_index"]
+            side = "long" if q["direction"] == "up" else "short"
+            sign = 1 if side == "long" else -1
+            after = tail[i:]
+            extreme = max(c.high for c in after) if sign == 1 else min(c.low for c in after)
+            # The leg runs from the last swing on the other side, confirmed before the break, to the extreme since.
+            start = [w.price for w in swing_points(tail[:i + 1]) if w.kind == ("LOW" if sign == 1 else "HIGH")
+                     and w.index + SWING_RIGHT <= d["signal_index"]]
+            base = start[-1] if start else q["level"]
+            leg = extreme - base
+            zone = sorted((extreme - 0.5 * leg, extreme - 0.4 * leg))
+            bps = basing_points(tail, side, start=i)
+            stop = nearest_minor_swing(swing_points(tail), tail, d["signal_index"], side)
+            item["scenario"] = {**_scenario(d, tail, stop), "stop_rule": "nearest minor swing (the backtest uses the same)",
+                                "pullback_zone_40_50": zone, "throwback_level": q["level"],
+                                "basing_point_to_trail": bps[-1].as_dict() if bps else None,
+                                "with_primary_trend": primary["state"] == ("UP" if sign == 1 else "DOWN")}
+        patterns.append(item)
+    completed = [p for p in patterns if p["verdict"]["status"] == "COMPLETED"]
+    out.update(state="COMPLETED_BREAKS" if completed else "PATTERNS_PRESENT" if patterns else "NO_RECENT_PATTERN",
+               primary_trend=primary, patterns=patterns, profile=cfg.as_dict(), weekly_bars_used=len(weeks),
+               track_record=track_record(series, "edwards_magee"),
+               note="Edwards & Magee wrote for stocks; on crypto this is an extension. Volume is one venue's volume, "
+                    "not a consolidated tape. Geometric detections also fire on random data.",
+               unevaluated_criteria=["stop-percentage table by stock price and beta (equities only)",
+                                     "ex-dividend adjustments", "Magee Evaluative Index (needs a market universe)",
+                                     "Dow confirmation between two averages", "pattern quality judgment"])
     return out
 
 
@@ -294,4 +412,5 @@ EVALUATORS: dict[str, Callable[[CandleSeries], dict[str, Any]]] = {
     "williams_volatility_breakout": williams_volatility_breakout,
     "raschke_holy_grail": raschke_holy_grail,
     "brandt_classical_patterns": brandt_classical_patterns,
+    "edwards_magee_trend_and_patterns": edwards_magee_trend_and_patterns,
 }

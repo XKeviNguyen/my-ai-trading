@@ -84,6 +84,18 @@ LINE_FLAT_TOLERANCE = 0.15          # line change over the pattern / initial hei
 MAX_CONVERGENCE_RATIO = 0.75        # final height <= 75% of initial height
 CONTAINMENT_TOLERANCE = 0.10        # closes inside the lines +/- 10% of initial height
 
+# Rectangles (horizontal top and bottom) - playbook spec Q3 tolerance
+RECT_MIN_BARS = 15
+RECT_MAX_SWINGS = 8                 # longest alternating swing run tried per ending swing
+RECT_ATR_TOLERANCE = 0.5            # touches on one side within 0.5 x ATR of each other ...
+RECT_PCT_TOLERANCE = 0.02           # ... and within 2% (the smaller tolerance applies)
+RECT_MIN_HEIGHT_ATR = 1.5           # the range must be wider than noise
+
+# Double tops / bottoms (time and depth rules of the books are applied in playbook.py, in calendar time)
+DOUBLE_MIN_BARS = 20                # bars between the two extremes
+DOUBLE_MIN_DEPTH = 0.10             # middle trough at least 10% below the lower top (mirrored for bottoms)
+DOUBLE_TOP_TOLERANCE = 0.03         # the two extremes within 3% of each other [EM]
+
 # Supply / demand zones
 ZONE_MAX_BASE_BARS = 3
 ZONE_BASE_MAX_RANGE_ATR = 0.5       # base bars: high - low <= 0.5 x ATR
@@ -92,7 +104,7 @@ ZONE_IMPULSE_MIN_RANGE_ATR = 2.0    # impulse bar: high - low >= 2 x ATR
 PATTERN_KINDS = frozenset({
     "VCP", "CUP_AND_HANDLE", "HEAD_AND_SHOULDERS", "INVERSE_HEAD_AND_SHOULDERS", "BULL_FLAG",
     "BEAR_FLAG", "ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE", "SYMMETRICAL_TRIANGLE", "RISING_WEDGE",
-    "FALLING_WEDGE", "DEMAND_ZONE", "SUPPLY_ZONE",
+    "FALLING_WEDGE", "DEMAND_ZONE", "SUPPLY_ZONE", "RECTANGLE", "DOUBLE_TOP", "DOUBLE_BOTTOM",
 })
 
 EXPIRED = "EXPIRED_NO_CLOSE_BEYOND_LEVELS"
@@ -167,6 +179,22 @@ class _Ctx:
         self.atr = _atr_series(candles)
         self.max_high = _SparseTable(self.highs, max)
         self.min_low = _SparseTable(self.lows, min)
+        self.max_close = _SparseTable(self.closes, max)
+        self.min_close = _SparseTable(self.closes, min)
+
+    def first_close_outside(self, start: int, upper: float, lower: float) -> int | None:
+        """Smallest j >= start whose close is above ``upper`` or below ``lower`` (O(log^2 n))."""
+        if start >= self.n or (self.max_close.query(start, self.n - 1) <= upper
+                               and self.min_close.query(start, self.n - 1) >= lower):
+            return None
+        lo, hi = start, self.n - 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self.max_close.query(start, mid) > upper or self.min_close.query(start, mid) < lower:
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
 
 
 class _SparseTable:
@@ -529,6 +557,7 @@ def _detect_triangles(ctx: _Ctx) -> list[dict[str, Any]]:
         up_state, down_state = _TRIANGLE_STATES[name]
         state, e, res, ri = _resolve(ctx, x1 + 1, confirm, expire, upper, lower, up_state, down_state)
         at = ri if ri is not None else ctx.n - 1
+        apex_fraction = None if ri is None else round((ri - x0) / (apex - x0), 6)
         out.append(_emit(
             ctx, name, state, x0, e,
             {"upper_line_at_end": upper(at), "lower_line_at_end": lower(at),
@@ -536,10 +565,95 @@ def _detect_triangles(ctx: _Ctx) -> list[dict[str, Any]]:
              "apex_bars_after_last_swing": round(apex - x1, 4)},
             {"bars": span, "initial_height": h0, "final_height": h1, "convergence_ratio": round(h1 / h0, 6),
              "upper_change_rel": round(rel_u, 6), "lower_change_rel": round(rel_l, 6),
-             "closes_contained": True},
+             "closes_contained": True, "resolution_apex_fraction": apex_fraction},
             params,
             "a close beyond the opposite line, or no close beyond either line before the apex/pending window",
             res, ri, confirm))
+    return out
+
+
+# ---------------------------------------------------------------------------------- Rectangles
+
+def _detect_rectangles(ctx: _Ctx) -> list[dict[str, Any]]:
+    out = []
+    params = {"min_bars": RECT_MIN_BARS, "atr_tolerance": RECT_ATR_TOLERANCE, "pct_tolerance": RECT_PCT_TOLERANCE,
+              "min_height_atr": RECT_MIN_HEIGHT_ATR}
+    sw = ctx.swings
+    for end in range(len(sw)):
+        for size in range(min(RECT_MAX_SWINGS, end + 1), 3, -1):  # longest first
+            w = sw[end - size + 1:end + 1]
+            if not all(a.kind != b.kind and a.index < b.index for a, b in zip(w, w[1:])):
+                continue
+            x0, x1 = w[0].index, w[-1].index
+            atr = ctx.atr[x1]
+            if x1 - x0 < RECT_MIN_BARS or atr is None or atr <= 0:
+                continue
+            hs = [s.price for s in w if s.kind == "HIGH"]
+            ls = [s.price for s in w if s.kind == "LOW"]
+            upper, lower = max(hs), min(ls)
+            tol_hi = min(RECT_ATR_TOLERANCE * atr, RECT_PCT_TOLERANCE * upper)
+            tol_lo = min(RECT_ATR_TOLERANCE * atr, RECT_PCT_TOLERANCE * lower)
+            if upper - min(hs) > tol_hi or max(ls) - lower > tol_lo or upper - lower < RECT_MIN_HEIGHT_ATR * atr:
+                continue
+            if ctx.max_close.query(x0, x1) > upper + tol_hi or ctx.min_close.query(x0, x1) < lower - tol_lo:
+                continue
+            confirm = x1 + ctx.right
+            # No expiry: a range lasts until a close leaves it. Windows ending at different swings of one range
+            # resolve on the same bar with the same state and are deduplicated in detect_candles.
+            ri = ctx.first_close_outside(x1 + 1, upper, lower)
+            if ri is None:
+                state, e, res = "FORMING", ctx.n - 1, None
+            elif ctx.closes[ri] > upper:
+                state, e, res = "BREAKOUT_CONFIRMED", max(ri, confirm), "CLOSE_ABOVE_UPPER_LEVEL"
+            else:
+                state, e, res = "BREAKDOWN_CONFIRMED", max(ri, confirm), "CLOSE_BELOW_LOWER_LEVEL"
+            out.append(_emit(
+                ctx, "RECTANGLE", state, x0, e,
+                {"upper": upper, "lower": lower, "upper_points": hs, "lower_points": ls},
+                {"bars": x1 - x0, "touches_upper": len(hs), "touches_lower": len(ls), "height": upper - lower,
+                 "atr_at_last_swing": atr, "height_atr": round((upper - lower) / atr, 6)},
+                params, f"a close beyond either side ({upper:g} / {lower:g}) resolves the range", res, ri, confirm))
+            break
+    return out
+
+
+# ----------------------------------------------------------------------------- Double tops / bottoms
+
+def _detect_doubles(ctx: _Ctx) -> list[dict[str, Any]]:
+    out = []
+    params = {"min_bars": DOUBLE_MIN_BARS, "min_depth": DOUBLE_MIN_DEPTH, "top_tolerance": DOUBLE_TOP_TOLERANCE}
+    for e1, mid, e2 in _alternating_windows(ctx.swings, 3):
+        top = e1.kind == "HIGH"
+        if e2.index - e1.index < DOUBLE_MIN_BARS:
+            continue
+        inner = min(e1.price, e2.price) if top else max(e1.price, e2.price)
+        outer = max(e1.price, e2.price) if top else min(e1.price, e2.price)
+        if abs(e1.price - e2.price) / inner > DOUBLE_TOP_TOLERANCE:
+            continue
+        depth = (inner - mid.price) / inner if top else (mid.price - inner) / inner
+        if depth < DOUBLE_MIN_DEPTH:
+            continue
+        # Neither extreme may be exceeded between them.
+        if top and ctx.max_high.query(e1.index, e2.index) > outer or \
+                not top and ctx.min_low.query(e1.index, e2.index) < outer:
+            continue
+        confirm = e2.index + ctx.right
+        span = e2.index - e1.index
+        valley = mid.price
+        if top:
+            state, e, res, ri = _resolve(ctx, e2.index + 1, confirm, confirm + _pending(span), lambda j: outer,
+                                         lambda j: valley, "FAILED", "BREAKDOWN_CONFIRMED")
+            name, inval = "DOUBLE_TOP", f"a close above {outer:g} (the higher top) before a close below {valley:g}"
+        else:
+            state, e, res, ri = _resolve(ctx, e2.index + 1, confirm, confirm + _pending(span), lambda j: valley,
+                                         lambda j: outer, "BREAKOUT_CONFIRMED", "FAILED")
+            name, inval = "DOUBLE_BOTTOM", f"a close below {outer:g} (the lower bottom) before a close above {valley:g}"
+        out.append(_emit(
+            ctx, name, state, e1.index, e,
+            {"first_extreme": e1.price, "second_extreme": e2.price, "middle": valley, "confirmation_level": valley},
+            {"bars_between": span, "depth": round(depth, 6), "second_extreme_bar_open_ms": ctx.opens_ms[e2.index],
+             "extreme_difference": round(abs(e1.price - e2.price) / inner, 6)},
+            params, inval, res, ri, confirm))
     return out
 
 
@@ -601,6 +715,8 @@ _DETECTORS: tuple[tuple[frozenset[str], Callable[[_Ctx], list[dict[str, Any]]]],
     (frozenset({"ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE", "SYMMETRICAL_TRIANGLE", "RISING_WEDGE",
                 "FALLING_WEDGE"}), _detect_triangles),
     (frozenset({"DEMAND_ZONE", "SUPPLY_ZONE"}), _detect_zones),
+    (frozenset({"RECTANGLE"}), _detect_rectangles),
+    (frozenset({"DOUBLE_TOP", "DOUBLE_BOTTOM"}), _detect_doubles),
 )
 
 

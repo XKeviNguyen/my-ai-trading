@@ -12,7 +12,7 @@ from typing import Any
 from .domain import AnalysisMode, Applicability, InstrumentIdentity
 
 UNVERIFIED = "UNVERIFIED"
-CATALOG_VERSION = "catalog/1"
+CATALOG_VERSION = "catalog/2"  # catalog/2: Edwards & Magee added; Brandt published markets corrected
 
 # Data a platform may hold. V0.2 has public OHLCV only.
 OHLCV = "ohlcv"
@@ -72,11 +72,22 @@ PROFILES: tuple[Profile, ...] = (
         "VCP detection is not implemented; a contraction event is not a VCP."),
        optional_data=(RS_UNIVERSE, FUNDAMENTALS)),
     _P("brandt", "Peter Brandt", "Classical chart patterns, market structure, invalidation",
-       ("futures", "fx", "crypto"), ("1d", "1w"), ("1w",), (), (OHLCV,), "published_book",
-       "Diary of a Professional Commodity Trader (2011): classical patterns on daily/weekly charts.",
+       ("futures", "fx"), ("1d", "1w"), ("1w",), (), (OHLCV,), "published_book",
+       "Diary of a Professional Commodity Trader (2011): classical patterns on daily/weekly charts of futures "
+       "and forex.",
        "experimental", "brandt_classical_patterns",
        ("Pattern recognition is discretionary; no mechanical rule set is published. Geometric detectors "
-        "approximate it and also fire on random data.",)),
+        "approximate it and also fire on random data.",
+        "Completion, duration and Last Day Rule follow the owner's trading-playbook paraphrase of the book; "
+        "the stop-order entry and the Weekend Rule are not modeled.")),
+    _P("edwards_magee", "Edwards & Magee", "Classical technical analysis, Dow Theory trend, patterns with volume",
+       ("equity",), ("1d", "1w"), ("1w",), (), (OHLCV,), "published_book",
+       "Technical Analysis of Stock Trends, 9th ed. (Edwards, Magee & Bassetti, 2007): daily patterns with "
+       "volume, weekly primary trend, basing-point stops.",
+       "experimental", "edwards_magee_trend_and_patterns",
+       ("Written for stocks; the beta-based stop table, ex-dividend rules and the Evaluative Index are not "
+        "evaluated.",
+        "Pattern recognition is discretionary; geometric detectors approximate it and also fire on random data.")),
     _P("livermore", "Jesse Livermore", "Pivotal points, trend behavior, price leadership",
        ("equity", "commodity"), ("1d",), (), (), (OHLCV,), "published_book",
        "How to Trade in Stocks (1940): pivotal points from daily price records."),
@@ -139,8 +150,9 @@ PROFILES: tuple[Profile, ...] = (
        "One Up on Wall Street (1989): company fundamentals and valuation; not a chart method."),
 )
 BY_ID = {p.methodology_id: p for p in PROFILES}
-if len(PROFILES) != 20 or len(BY_ID) != 20:
-    raise RuntimeError("Catalog must contain 20 unique profiles")
+CATALOG_SIZE = 21
+if len(PROFILES) != CATALOG_SIZE or len(BY_ID) != CATALOG_SIZE:
+    raise RuntimeError(f"Catalog must contain {CATALOG_SIZE} unique profiles")
 
 
 def asset_class(instrument: InstrumentIdentity) -> str:
