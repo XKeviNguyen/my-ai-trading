@@ -438,6 +438,8 @@ So every backtest now also runs with zero costs and with double costs, next to a
 
 While retaking the screenshots we also noticed a clean rectangle being called fragile. Matching the alternative detection by start bar was the problem: a 2-bar pivot sees more swings, so the rectangle's 8-swing window starts later. It now matches by overlap.
 
+**CI then failed the desktop job once, on a test that passed locally.** The clipping regression test reported 33 values as clipped at once, in CI only. It measured label sizes the moment the analysis text appeared, but Qt lays widgets out from posted events, so that moment can come before the layout pass. Locally it failed in 1 of 16 counted full runs and never in 40 runs on its own, even under CPU load. The test now waits up to 5 seconds for layout to settle, then asserts. With the size-policy fix removed, it still fails, so it still catches the real bug.
+
 **What is still open.**
 
 - Brandt's resting stop-order entry is not modeled, so playbook backtests fill at the next open and say so.
@@ -462,6 +464,7 @@ While retaking the screenshots we also noticed a clean rectangle being called fr
 14. **Check a heuristic against how the other side computes.** A check built on first-in-first-out failed against exchanges that use average cost.
 15. **A fix can bring its own look-ahead.** Any value that a bar closing later can change, such as a weekly bar or a wider pivot window, must be pinned to what was known at the signal bar.
 16. **Make the regression test fail first, in the real conditions.** Two of our UI tests passed without their fix until we added the theme and an active window.
+17. **Never read layout geometry at a single moment.** Qt resizes widgets from queued events. Wait, within a time limit, until the layout settles; a real defect stays broken.
 
 ## What's next
 

@@ -321,9 +321,16 @@ def test_key_value_rows_are_never_clipped(qapp, window, engine):
     window.select_tab("analysis")
     view = window.views["analysis"]
     assert wait_until(lambda: "Peter Brandt" in texts(view))
-    clipped = [lab.text() for lab in view.findChildren(QLabel)
-               if lab.isVisible() and lab.objectName() == "kv-value" and lab.wordWrap()
-               and lab.heightForWidth(lab.width()) > lab.height() + 1]
+
+    def clipped_values() -> list[str]:
+        return [lab.text() for lab in view.findChildren(QLabel)
+                if lab.isVisible() and lab.objectName() == "kv-value" and lab.wordWrap()
+                and lab.heightForWidth(lab.width()) > lab.height() + 1]
+
+    # Layout runs from posted events, so geometry read the moment the text appears can still be stale (seen in CI:
+    # every value "clipped" at once). Let layout settle; the real defect stays clipped and still fails below.
+    wait_until(lambda: not clipped_values(), 5)
+    clipped = clipped_values()
     qapp.setStyleSheet(style)
     qapp.setPalette(palette)
     qapp.setFont(font)
