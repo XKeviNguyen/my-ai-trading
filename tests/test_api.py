@@ -234,3 +234,51 @@ def test_shutdown_does_not_wait_forever_for_a_stuck_monitor(monkeypatch):
         started = time.monotonic()
     assert time.monotonic() - started < 3  # FLOW-11: the shutdown wait was unbounded
     store.close()
+
+
+def test_risk_size_endpoint_is_exact_and_validated(env):
+    c, ex, _ = env
+    body = {"capital": "100000", "entry": "20", "stop": "18", "target": "26"}
+    assert c.post("/api/v1/risk/size", json=body).status_code == 401
+    r = c.post("/api/v1/risk/size", json=body, headers=H)
+    assert r.status_code == 200
+    d = r.json()
+    assert (d["side"], d["quantity"], d["risk_amount"], d["reward_risk"]) == ("long", "400", "800", "3")
+    for bad in ({**body, "stop": "20"}, {**body, "risk_fraction": "0.03"}, {**body, "target": "19"},
+                {**body, "entry": "NaN"}, {**body, "extra": 1}):
+        assert c.post("/api/v1/risk/size", json=bad, headers=H).status_code == 422
+
+
+def test_playbook_backtest_through_the_api(env):
+    c, _, _ = env
+    base = {"symbol": "SANDUSDT", "timeframe": "1d", "bars": 300,
+            "config": {"hold_bars": 5, "sizing": "fixed_risk", "exit_policy": "trailing_three_day"}}
+    r = c.post("/api/v1/backtest", json={**base, "playbook_profile": "brandt"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["source"]["kind"] == "playbook" and r.json()["label"].startswith("HYPOTHETICAL")
+    assert c.post("/api/v1/backtest", json={**base, "playbook_profile": "brandt", "event_type": "BREAKOUT"},
+                  headers=H).status_code == 422
+    assert c.post("/api/v1/backtest", json={**base, "playbook_profile": "nobody"}, headers=H).status_code == 422
+    assert c.post("/api/v1/backtest", json={**base, "playbook_profile": "brandt", "timeframe": "1h"},
+                  headers=H).status_code == 422
+    bad = {**base, "playbook_profile": "brandt", "config": {"hold_bars": 5, "risk_fraction": 0.05}}
+    assert c.post("/api/v1/backtest", json=bad, headers=H).status_code == 422
+
+
+def test_risk_size_extreme_decimals_are_422_not_500_or_huge(env):
+    c, _, _ = env
+    base = {"capital": "10000", "entry": "100", "stop": "95"}
+    for extra in ({"quantity_step": "1e-999999"}, {"target": "1e40"}, {"target": "1e999999"},
+                  {"capital": "1e999999"}, {"capital": "1e-999999"}, {"capital": "9" * 5000}):
+        r = c.post("/api/v1/risk/size", json={**base, **extra}, headers=H)
+        assert r.status_code == 422 and len(r.content) < 5000, extra
+    tiny = c.post("/api/v1/risk/size", json={"capital": "1e15", "entry": "1e15", "stop": "1e-12",
+                                             "target": "1e15", "quantity_step": "1e-12"}, headers=H)
+    assert tiny.status_code in (200, 422)
+
+
+def test_risk_size_rejects_a_tiny_risk_fraction(env):
+    c, _, _ = env
+    r = c.post("/api/v1/risk/size", json={"capital": "1000", "entry": "100", "stop": "95", "risk_fraction": "1e-999999"},
+               headers=H)
+    assert r.status_code == 422 and len(r.content) < 5000

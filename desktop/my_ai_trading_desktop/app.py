@@ -20,13 +20,15 @@ from .views.analysis import AnalysisView
 from .views.copilot import CopilotView
 from .views.methods import MethodsView
 from .views.reports import ReportsView
+from .views.risk import RiskView
 from .views.settings import SettingsView
 from .views.studio import StudioView
 from .views.usage import UsageView
 from .widgets import buddy_label, status_label
 
-TAB_ORDER = ("analysis", "copilot", "studio", "accounts", "alerts", "reports", "methods", "usage", "settings")
-TAB_TITLES = {"analysis": "Analysis", "copilot": "Copilot", "studio": "Strategy Studio", "accounts": "Accounts",
+TAB_ORDER = ("analysis", "copilot", "studio", "risk", "accounts", "alerts", "reports", "methods", "usage", "settings")
+TAB_TITLES = {"analysis": "Analysis", "copilot": "Copilot", "studio": "Strategy Studio", "risk": "Risk",
+              "accounts": "Accounts",
               "alerts": "Alerts",
               "reports": "Reports", "methods": "Methods", "usage": "Usage", "settings": "Settings"}
 
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
             "analysis": AnalysisView(self.ctx),
             "copilot": CopilotView(self.ctx),
             "studio": StudioView(self.ctx),
+            "risk": RiskView(self.ctx),
             "accounts": AccountsView(self.ctx),
             "alerts": AlertsView(self.ctx, notify=self.notify, tray_available=self.tray is not None),
             "reports": ReportsView(self.ctx),
@@ -75,8 +78,9 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         for i, key in enumerate(TAB_ORDER):
             self.tabs.addTab(self.views[key], TAB_TITLES[key])
-            self.tabs.setTabToolTip(i, f"{TAB_TITLES[key]} (Ctrl+{i + 1})")
-            sc = QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self)
+            digit = (i + 1) % 10  # Ctrl+1 .. Ctrl+9, then Ctrl+0 for the tenth tab
+            self.tabs.setTabToolTip(i, f"{TAB_TITLES[key]} (Ctrl+{digit})")
+            sc = QShortcut(QKeySequence(f"Ctrl+{digit}"), self)
             sc.activated.connect(lambda k=key: self.select_tab(k))
         self.tabs.currentChanged.connect(self._tab_changed)
         outer.addWidget(self.tabs, 1)

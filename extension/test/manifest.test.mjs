@@ -30,3 +30,13 @@ test("no content scripts, no CSP loosening, no external connectivity", () => {
     assert.ok(!text.includes(bad), bad);
   }
 });
+
+test("the wide tab grid has one column per tab", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const html = await readFile(new URL("../static/sidepanel.html", import.meta.url), "utf8");
+  const css = await readFile(new URL("../static/sidepanel.css", import.meta.url), "utf8");
+  const tabs = (html.match(/role="tab"/g) ?? []).length;
+  const m = css.match(/grid-template-columns: repeat\((\d+), auto\)/);
+  assert.ok(m, "wide tab rule present");
+  assert.equal(Number(m[1]), tabs);
+});

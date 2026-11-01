@@ -1,6 +1,6 @@
 # Progress & Handoff — My AI Trading
 
-**Last updated:** 2026-10-27 · **Branch:** work lands on `main` through pull requests. The owner commits, pushes and merges.
+**Last updated:** 2026-11-01 · **Branch:** work lands on `main` through pull requests. The owner commits, pushes and merges.
 States are *implemented + offline-tested* unless marked otherwise. One read-only public `analyze` run against live Binance is the only live check so far (see below). Nothing has been tested against a live AI provider or a real exchange testnet.
 
 ## Implemented (offline tests pass)
@@ -12,8 +12,12 @@ States are *implemented + offline-tested* unless marked otherwise. One read-only
 | Fast Engine events with invalidation, stale suppression | `engine.py` | F02, F06 | `tests/test_engine.py` (no-look-ahead property test) |
 | Binance public adapter (perp + spot), rate-limit handling | `providers/binance.py` | F01 | `tests/test_provider_market.py` |
 | Shared closed-bar cache, server clock, MTF snapshot | `market.py` | F01, F03 | `tests/test_provider_market.py` |
-| 20-profile catalog with F13 metadata + applicability gate | `methodology.py` | F04, F13 | `tests/test_methodology.py` (Scenarios G, H, I, K) |
-| Rule-check evaluators for 7 profiles: Minervini trend template (partial), Weinstein stages, Turtle, Darvas, Williams volatility breakout, Raschke Holy Grail, Brandt classical patterns | `strategies.py` | F04 | `tests/test_strategies.py` |
+| 21-profile catalog with F13 metadata + applicability gate (catalog/2 adds Edwards & Magee and corrects Brandt's published markets) | `methodology.py` | F04, F13 | `tests/test_methodology.py` (Scenarios G, H, I, K) |
+| Rule-check evaluators for 8 profiles: Minervini trend template (partial), Weinstein stages, Turtle, Darvas, Williams volatility breakout, Raschke Holy Grail, Brandt classical patterns (v2), Edwards & Magee trend and patterns | `strategies.py` | F04 | `tests/test_strategies.py` |
+| Trading-playbook profiles: completion rules per profile, breakout quality, verdicts with labels, track record on the same chart, pivot-sensitivity check, weekly resampling, Dow swing trend | `playbook.py` | F04 | `tests/test_playbook.py` (prefix-invariance tests) |
+| Stop rules: Last Day Rule, Brandt's Trailing Stop Rule, Edwards & Magee basing points | `stops.py` | F10 | `tests/test_stops.py` |
+| Risk-based position size and reward/risk (Decimal, 0.01%–2% per trade) | `risk.py`, `POST /api/v1/risk/size` | F10, F11 | `tests/test_risk.py` (property test), `tests/test_api.py` |
+| Rectangles and double tops/bottoms | `patterns.py` | F04 | `tests/test_patterns.py` |
 | Perspectives (gate → native evaluation, hybrid tactical layer, no vote) | `perspectives.py` | F07, F13 | `tests/test_methodology.py` |
 | Typed rule DSL + NL compiler + LLM proposal validation (see "Rule compiler" below) | `rules.py`, `compiler.py` | F05 | `tests/test_rules_compiler.py` (Scenarios B, C) |
 | Persistence: settings (with ETag / If-Match), versioned strategies, hash-bound approval, alerts, usage ledger, order journal | `store.py` | F05, F06, F09 | `tests/test_monitor_store.py`, `tests/test_settings_concurrency.py` |
@@ -21,7 +25,7 @@ States are *implemented + offline-tested* unless marked otherwise. One read-only
 | Binance kline WebSocket streams as a monitor wake-up signal (data still comes from REST closed bars) | `streams.py` | F06 | `tests/test_streams.py` (needs the `accounts` extra for `websockets`) |
 | Challenge My Thesis (deterministic) | `thesis.py` | F12 | `tests/test_thesis_copilot.py` (Scenario J) |
 | Copilot router, consent/budget gates, vision input checks | `copilot.py` | F07–F09 | `tests/test_thesis_copilot.py` (Scenario E) |
-| Backtester (next-open fills, costs, funding, stops, gaps, walk-forward) | `backtest.py` | F10 | `tests/test_backtest.py` |
+| Backtester (next-open fills, costs, funding, stops, gaps, walk-forward); playbook mode (structural stops, measured targets, trailing exit, fixed-risk sizing, R statistics); robustness replay (zero/double costs, hold baseline, win-rate interval) | `backtest.py` | F10 | `tests/test_backtest.py`, `tests/test_backtest_playbook.py` |
 | ML: leak-free dataset, purged split, baselines, walk-forward logistic regression and LightGBM, calibration, leakage check (library only; not reachable from the CLI or API) | `ml.py` | §5, F10 | `tests/test_ml.py` |
 | Screenshot analysis: OpenCV candle geometry, Tesseract OCR (symbol, timeframe, MA labels, price axis), cross-checks against exchange data, decompression-bomb guard | `chartvision.py` | F08 | `tests/test_chartvision.py`, `tests/test_ocr_benchmark.py` |
 | MACD, Bollinger Bands, ADX; chart patterns (generic VCP approximation, cup and handle, head and shoulders, flags, triangles, wedges, supply/demand zones); pattern alerts on the newest closed bar | `indicators.py`, `patterns.py`, `monitor.py` | F02, F04, F06 | `tests/test_indicators.py`, `tests/test_patterns.py` (no-look-ahead property test; 11,370-prefix stress run: 0 mismatches) |
@@ -50,7 +54,7 @@ Multi-timeframe crossings compare values as of the **previous close of the trigg
 
 ## Test suites
 
-CI (`.github/workflows/ci.yml`) runs four jobs on every pull request and on pushes to `main`: `python` (Python 3.11 and 3.14), `extension` (Node 22: type-check, build, `node --test`), `desktop` (Python 3.14, Qt offscreen) and `secret-scan` (full history). **The CI run is the source of truth for test counts.** Last local counts, 2026-10-27 (six-breaker remediation): Python 563 passed, extension 55/55, desktop 114 passed, 0 skipped.
+CI (`.github/workflows/ci.yml`) runs four jobs on every pull request and on pushes to `main`: `python` (Python 3.11 and 3.14), `extension` (Node 22: type-check, build, `node --test`), `desktop` (Python 3.14, Qt offscreen) and `secret-scan` (full history). **The CI run is the source of truth for test counts.** Last local counts, 2026-11-01 (trading-playbook features): Python 653 passed, extension 59/59, desktop 120 passed, 0 skipped.
 
 Local commands:
 
@@ -98,7 +102,7 @@ Known and documented, not changed: after an outage the monitor evaluates only th
 - **Live AI:** the Anthropic adapter is untested against the real API; it needs `pip install '.[ai]'`, credentials, `MY_AI_TRADING_MODEL`, consent in Settings, and optionally `MY_AI_TRADING_PRICES` for dollar estimates.
 - **Real exchange testnets:** no adapter has been run against a real testnet from this repository. One-click OAuth is blocked by provider approval.
 - **Chrome extension:** unit tests run in CI. It was exercised end to end in headless Chrome against the real API code with synthetic data. Not yet tried: opening the side panel from the toolbar, real desktop notifications, symbol detection from a real Binance tab, live data, screen readers, and real 200% browser zoom.
-- **Profiles:** 13 of the 20 profiles are catalog-only (no rule checks). Equity session calendars, licensed fundamentals/macro data and RS universe ranking are not implemented. The VCP detector is a generic geometric approximation, not a Minervini VCP or SEPA evaluation.
+- **Profiles:** 13 of the 21 profiles are catalog-only (no rule checks). Equity session calendars, licensed fundamentals/macro data and RS universe ranking are not implemented. The VCP detector is a generic geometric approximation, not a Minervini VCP or SEPA evaluation.
 - **OCR** runs against the real Tesseract 5.5 on synthetic charts only. It has not been tested on real exchange screenshots.
 - **R7** (PyTorch, Hugging Face, PEFT/LoRA): not started and not installed. It needs real datasets, evaluation goals, hardware and licenses first (PRD §5).
 - **Python 3.11** runs in CI only; locally only 3.14 has been run.
@@ -124,3 +128,4 @@ python3 -m venv .venv            # or: python3 -m venv --without-pip .venv + boo
 2. Finish the remediation plan in the 2026-10-27 audit, then rerun the affected breakers.
 3. Owner: run the testnet walkthrough in `ACCOUNTS_TRADING.md` with your own testnet keys.
 4. Implement additional profiles only with sourced, testable criteria.
+5. Trading playbook follow-ups (see `docs/specs/trading-playbook-features.md` §0 status): resting stop-order fill model for Brandt entries, H&S and triangle failures as their own tradable signals, S/R role-reversal levels, gap classification, a testnet trade journal with Brandt-style self-review.

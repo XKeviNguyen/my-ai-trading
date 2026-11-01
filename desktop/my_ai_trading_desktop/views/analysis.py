@@ -178,6 +178,24 @@ class AnalysisView(QWidget):
         if checks:
             lay.addWidget(collapsible(f"Checks ({len(checks)})",
                                       bullet_list(f"{k}: {F.fmt_json(v)}" for k, v in checks.items())))
+        patterns = [x for x in ev.get("patterns") or [] if isinstance(x, dict) and isinstance(x.get("quality"), dict)]
+        track = F.track_record_text(ev.get("track_record"))
+        if patterns or track:
+            inner = QWidget()
+            il = QVBoxLayout(inner)
+            il.setContentsMargins(0, 0, 0, 0)
+            if track:
+                il.addWidget(plain_label(track, name="track-record"))
+            for x in patterns:
+                title, rows, inval = F.playbook_pattern_rows(x)
+                il.addWidget(plain_label(title, bold=True, name="playbook-pattern"))
+                il.addWidget(kv_form(rows))
+                il.addWidget(plain_label(f"Invalidation: {inval}", name="invalidation"))
+            il.addWidget(plain_label("Study levels, not orders. Geometric detections also appear on random data.",
+                                     muted=True))
+            trend = ev.get("primary_trend") if isinstance(ev.get("primary_trend"), dict) else {}
+            suffix = f" · weekly trend {F.text(trend.get('state')).lower()}" if trend.get("state") else ""
+            lay.addWidget(collapsible(f"Playbook patterns ({len(patterns)}){suffix}", inner))
         unevaluated = F.str_list(ev.get("unevaluated_criteria"))
         if unevaluated:
             lay.addWidget(collapsible("Unevaluated criteria", bullet_list(unevaluated)))

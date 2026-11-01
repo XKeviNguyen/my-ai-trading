@@ -53,7 +53,7 @@ is never shown again or logged, and is sent only as `Authorization: Bearer …` 
 | Alerts | `GET /alerts?after_seq=N` | The service worker polls once a minute (and every 30 s while the Alerts tab is open). Newest first; quiet-hours alerts are de-emphasised. Optional desktop notifications (off by default, plain text only; the first poll only sets a baseline). |
 | Reports | `POST /reports`, `GET /reports`, `GET /reports/{id}?format=markdown` | Save the current analysis as a frozen report, list saved reports, and download one as Markdown. |
 | Usage | `GET /usage` | Monthly tokens and estimated cost vs budgets, per feature/model rows, and the estimate note. |
-| Methods | `GET /methodologies`, `PUT /settings` | All 20 profiles with maturity and evidence level. Enable or disable any of them (including all) and choose NATIVE/HYBRID/ADAPTED. |
+| Methods | `GET /methodologies`, `PUT /settings` | All 21 profiles with maturity and evidence level. Enable or disable any of them (including all) and choose NATIVE/HYBRID/ADAPTED. |
 | Settings | `GET`/`PUT /settings` | Token, connection test, watchlist, default analysis timeframe, quiet hours (UTC), pause alerts, AI data consent, deep-analysis opt-in, monthly token/USD budgets. Saves send the full settings object back with `If-Match` (the version the form was loaded from); if the settings changed elsewhere (another panel, window or the desktop app), the engine answers 412, nothing is saved, and the form reloads the newer settings and says so. |
 
 Errors are explicit: 401 → paste the token; 421 or connection refused → "local engine not

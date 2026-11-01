@@ -1,4 +1,4 @@
-// Methodology selection: all 20 profiles, enable/disable any (including none) and choose a mode.
+// Methodology selection: all 21 profiles, enable/disable any (including none) and choose a mode.
 
 import { ApiError } from "../api.js";
 import type { App, View } from "../app.js";

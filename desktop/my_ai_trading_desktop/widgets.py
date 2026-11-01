@@ -89,6 +89,9 @@ def kv_form(rows: Iterable[tuple[str, str]]) -> QWidget:
     for k, v in rows:
         key = plain_label(k, selectable=False, bold=True)
         val = plain_label(v, name="kv-value")  # numbers use the equal-width data font (theme.py)
+        # QFormLayout grows only Expanding fields; a Preferred label stayed at its wrapped hint width and its
+        # second line was clipped (seen in screenshots: "published_book /" without "experimental").
+        val.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         key.setBuddy(val)
         form.addRow(key, val)
     return w

@@ -19,6 +19,8 @@ For the current feature status, see the [README](../README.md) and [PROGRESS.md]
 | 2026-10-27 | README rebuilt as a visual tour: architecture, workflows, database, screenshots | PR #6 |
 | 2026-10-27 | Independent six-breaker audit of `main` (`0586cd1`): not release-ready, 4 High findings | `docs/audit-2026-10-27` |
 | 2026-10-28 | Six-breaker remediation: all findings fixed or documented, re-audited by six breakers and two verifiers | `fix/six-breaker-remediation` |
+| 2026-10-31 | Agent skills configured; trading-playbook features spec with Brandt and Edwards & Magee profiles | `docs/playbook-spec` |
+| 2026-11-01 | Playbook features built: risk calculator, stop rules, breakout quality, two profiles, playbook backtests, honesty checks, Risk tab; two breaker rounds | `docs/playbook-spec` |
 
 ## Starting point
 
@@ -371,6 +373,79 @@ Both fixes have tests that fail on the pushed commit. The lesson: a limit that c
   - Decide on Gitleaks and a Python lock file.
   - Provide testnet keys and an AI budget for the first real runs.
 
+## Phase 10: from a trading playbook to a features spec
+
+The owner keeps a trading playbook: rules paraphrased from two books, Edwards & Magee's *Technical Analysis of Stock Trends* and Peter Brandt's *Diary of a Professional Commodity Trader*. The goal was to turn it into features without inventing rules. We changed no code in this phase.
+
+**What we did**
+- Set up the per-repo configuration for the engineering skills (`docs/agents/`): GitHub Issues as the tracker, the default triage labels, and a single glossary with ADRs.
+- Wrote `docs/specs/trading-playbook-features.md`:
+  - two trader profiles (`brandt`, upgraded, and a new `edwards_magee`) with one switch per point where the books disagree;
+  - a status for every rule in sections 3–11 of the playbook (exists, programmable, needs a definition, subjective, or not applicable here), with the file it maps to and a deterministic test;
+  - five features to build first, and eleven questions only the owner can answer.
+
+**Problems and how we handled them**
+- **Both books are discretionary.** "One of the five best examples this year" cannot be coded. We split each rule into a measurable part (duration, boundary type, close beyond the defining swing, volume ratio) and a judgment part that stays with the human.
+- **Edwards & Magee wrote about stocks; this platform trades crypto.** Their beta-based stop table, ex-dividend rules and market-breadth index have no inputs here. Every Edwards & Magee evaluation on crypto is therefore labeled adapted and unvalidated, and lists what it could not evaluate.
+- **The existing catalog overstated a source.** The `brandt` profile lists crypto as a published market, but the 2011 book trades futures and forex. The spec flags it for correction.
+- **The backtester cannot test Brandt's entries yet.** It fills at the next bar's open, while Brandt enters with stop orders at the pattern boundary. The spec adds a stop-order fill model before any Brandt result is trusted.
+
+## Phase 11: building the playbook, then letting it be attacked twice
+
+We built the five features from the spec in order:
+
+1. the risk calculator;
+2. the stop rules;
+3. breakout quality, with rectangles and double tops and bottoms;
+4. the playbook backtest mode;
+5. the two profiles.
+
+Each one started from the playbook's own wording and a hand-built candle example. When the books disagree, the difference became a profile setting instead of a guess.
+
+**What we added beyond the spec, and why.** Before adding more, we read what people complain about in other trading-analysis apps. The notes are in [research/competitor-complaints-2026-10.md](research/competitor-complaints-2026-10.md). Three complaints kept coming back:
+
+- backtests that ignore costs;
+- "AI signals" that never explain themselves;
+- pattern tools whose results change with their settings.
+
+So every backtest now also runs with zero costs and with double costs, next to a simple hold-the-window baseline. Each pattern verdict shows the numbers behind it, and counts how the same profile's earlier signals did on the same chart, with the sample size. A pivot check says whether a pattern survives a different swing setting. Last, the Risk tab puts the calculator in both apps.
+
+**The first breaker round found a look-ahead we had written ourselves.**
+
+- *Look-ahead:* a pattern could "complete" on a bar before its last swing point was confirmed. A backtest would then enter on information from two bars later. The signal bar is now never earlier than the confirmation bar, and a prefix test checks it on a planted example.
+- *Rules missed:*
+  - Basing points vanished in strong rallies.
+  - The 3% filter only ever looked at the first close past the line.
+  - The double-top time and depth rules were never applied.
+- *Two trailing stops:* the backtest and the stop library each had their own trailing stop, and they disagreed on the same bars. They now share one class.
+
+**The second round found that one of our fixes had its own look-ahead.**
+
+- *Weekly confirmation:* we had confirmed "major" breaks with the weekly bar that contained the signal day. That bar closes up to six days later, so the same past signal changed class as time went on. The class is now decided at the signal bar, and weekly confirmation is a separate field that says "pending" until that week closes.
+- *Impossible target fills:* a target could also "fill" at a price the bar never traded, which booked a loss as a win.
+- *Huge responses:* a tiny risk fraction made the API return six megabytes.
+
+**Screenshots found a bug the tests could not see.** In the desktop app, values in key/value tables lost their second line, for example "published_book /" without "experimental". `QFormLayout` only widens fields whose size policy is Expanding, and the label was Preferred. It only shows with the theme's wider data font, so our first regression test passed without the fix. We applied the theme in the test, watched it fail, then fixed it. The same trick caught a weak keyboard test: the Risk tab grabbed focus and trapped the arrow keys on the tab bar, and the test only failed once the window was really active.
+
+**A last check of the fixes found six more small issues, and we fixed them too.**
+
+- The pivot check judged a pattern before a wider pivot could even be confirmed, so it called too many patterns fragile.
+- The Edwards & Magee pullback leg skipped the pattern's own last swing.
+- Both apps hid the first unmet reason on a failed pattern.
+- A target already reached at the signal close still produced a target-less trade.
+- Basing points could lag behind a higher reaction low.
+- One docstring was stale.
+
+While retaking the screenshots we also noticed a clean rectangle being called fragile. Matching the alternative detection by start bar was the problem: a 2-bar pivot sees more swings, so the rectangle's 8-swing window starts later. It now matches by overlap.
+
+**CI then failed the desktop job once, on a test that passed locally.** The clipping regression test reported 33 values as clipped at once, in CI only. It measured label sizes the moment the analysis text appeared, but Qt lays widgets out from posted events, so that moment can come before the layout pass. Locally it failed in 1 of 16 counted full runs and never in 40 runs on its own, even under CPU load. The test now waits up to 5 seconds for layout to settle, then asserts. With the size-policy fix removed, it still fails, so it still catches the real bug.
+
+**What is still open.**
+
+- Brandt's resting stop-order entry is not modeled, so playbook backtests fill at the next open and say so.
+- H&S and triangle failures are reported but not traded.
+- A clean playbook backtest proves nothing about an edge until it is run on real history with costs.
+
 ## Lessons we keep
 
 1. **Count closed bars at every layer.** Most of our data bugs came from the boundary between forming and closed candles.
@@ -387,6 +462,9 @@ Both fixes have tests that fail on the pushed commit. The lesson: a limit that c
 12. **Audit what you merged as if a stranger wrote it.** Green suites only prove the paths someone thought to test. Adversarial, read-only breakers with independent oracles found what the tests missed.
 13. **Re-audit the fixes too.** Our own fixes introduced one High and several Mediums; only an independent re-audit found them.
 14. **Check a heuristic against how the other side computes.** A check built on first-in-first-out failed against exchanges that use average cost.
+15. **A fix can bring its own look-ahead.** Any value that a bar closing later can change, such as a weekly bar or a wider pivot window, must be pinned to what was known at the signal bar.
+16. **Make the regression test fail first, in the real conditions.** Two of our UI tests passed without their fix until we added the theme and an active window.
+17. **Never read layout geometry at a single moment.** Qt resizes widgets from queued events. Wait, within a time limit, until the layout settles; a real defect stays broken.
 
 ## What's next
 

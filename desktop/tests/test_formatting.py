@@ -177,3 +177,48 @@ def test_preview_rows():
     assert rows["Timeframes used"] == "1h, 4h"
     assert rows["Cooldown bars"] == "0"
     assert F.preview_rows(None) == []
+
+
+def test_risk_view_validation_and_request():
+    from my_ai_trading_desktop.formatting import risk_request as to_request, validate_risk as validate
+    ok = {"capital": "25000", "risk_pct": "0.8", "entry": "100", "stop": "95", "target": "115", "step": ""}
+    assert validate(ok) == {}
+    assert to_request(ok) == {"capital": "25000", "entry": "100", "stop": "95", "risk_fraction": "0.008",
+                              "target": "115"}
+    assert set(validate({**ok, "capital": "", "entry": "1e5", "risk_pct": "3"})) == {"capital", "entry", "risk_pct"}
+    assert "stop" in validate({**ok, "stop": "100"})
+    assert "risk_pct" in validate({**ok, "risk_pct": "0.001"}) and validate({**ok, "risk_pct": "0.01"}) == {}
+    assert "target" in validate({**ok, "target": "90"})
+    assert validate({**ok, "stop": "105", "target": "90"}) == {}
+
+
+def test_playbook_pattern_rows_and_track_record_text():
+    p = {"pattern": "RECTANGLE", "invalidation": "a close back below 1 (back inside the pattern)",
+         "quality": {"direction": "up", "boundary_kind": "HORIZONTAL", "duration_weeks": 9.0, "close_beyond_pct": 0.05,
+                     "volume_ratio": 3.5},
+         "verdict": {"status": "COMPLETED", "label": "Completed by this profile's rules", "unmet": []},
+         "signal_class": "MINOR",
+         "pivot_sensitivity": {"found_with": [3], "robust": False},
+         "scenario": {"level": 1.0, "stop": None, "target": 1.2, "pullback_zone_40_50": [0.9, 0.95]}}
+    title, rows, inval = F.playbook_pattern_rows(p)
+    assert title == "rectangle · Completed by this profile's rules"
+    d = dict(rows)
+    assert d["Break"] == "up, horizontal side" and d["Close beyond level"] == "5.0%"
+    assert d["Pivot check"] == "found with 3-bar pivots only (fragile)"
+    assert "stop —" in d["Study levels"] and "40–50% pullback zone" in d
+    assert inval.startswith("a close back below")
+    assert "of 4 completed" in F.track_record_text({"resolved": 4, "target_first": 1, "target_first_rate": 0.25,
+                                                     "target_first_rate_ci95": [0.05, 0.7]})
+    assert F.track_record_text({"resolved": 0}).startswith("No earlier")
+    assert F.track_record_text(None) is None
+    hostile = F.playbook_pattern_rows({"pattern": None, "quality": {},
+                                       "verdict": {"status": "X", "unmet_labels": [1, "first", "Too short"]}})
+    assert hostile[1][0] == ("Break", "none yet") and hostile[0].endswith("· X")
+    assert dict(hostile[1])["Also unmet"] == "first; Too short"
+    failed = F.playbook_pattern_rows({"pattern": "SYMMETRICAL_TRIANGLE", "quality": {},
+                                      "verdict": {"status": "PATTERN_FAILURE", "label": "Pattern failed",
+                                                  "unmet_labels": ["Not decisive", "Late apex"]},
+                                      "pivot_sensitivity": {"found_with": [3], "robust": None}})
+    rows = dict(failed[1])
+    assert rows["Also unmet"] == "Not decisive; Late apex"  # every reason shown when the status is the failure
+    assert rows["Pivot check"] == "pending (needs 5 more bars)"

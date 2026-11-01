@@ -60,6 +60,10 @@ SHAPES = {
                            (40, 112)]), {}, "BREAKDOWN_CONFIRMED"),
     "FALLING_WEDGE": (path([(0, 130), (6, 120), (12, 124), (18, 112), (24, 114), (30, 106), (34, 108),
                             (40, 118)]), {}, "BREAKOUT_CONFIRMED"),
+    "RECTANGLE": (path([(0, 100), (6, 120), (12, 100), (18, 120), (24, 100), (30, 120), (36, 100), (40, 110),
+                        (46, 126)]), {}, "BREAKOUT_CONFIRMED"),
+    "DOUBLE_TOP": (path([(0, 100), (10, 120), (25, 105), (40, 120), (50, 98)]), {}, "BREAKDOWN_CONFIRMED"),
+    "DOUBLE_BOTTOM": (path([(0, 100), (10, 80), (25, 95), (40, 80), (50, 102)]), {}, "BREAKOUT_CONFIRMED"),
 }
 
 
@@ -215,8 +219,8 @@ def test_kinds_filter_and_unknown_kind():
     assert only and {d["pattern"] for d in only} == {"HEAD_AND_SHOULDERS"}
     assert detect_patterns(s, kinds=set()) == []
     with pytest.raises(ValueError):
-        detect_patterns(s, kinds={"DOUBLE_TOP"})
-    assert len(PATTERN_KINDS) == 13
+        detect_patterns(s, kinds={"DIAMOND"})
+    assert len(PATTERN_KINDS) == 16
 
 
 def test_detections_never_span_a_gap():

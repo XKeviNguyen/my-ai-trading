@@ -27,7 +27,7 @@
 
 ## R3 — Strategy Registry & Prompt-defined rules
 - Implement certified deterministic rules gradually (first Minervini-like trend screen, pivots/volume, Brandt-like structures) with sourced definitions and test fixtures.
-- All 20 profiles remain selectable but unimplemented profiles are labeled as such; no fake consensus or bogus "same as trader" claims.
+- All 21 profiles remain selectable but unimplemented profiles are labeled as such; no fake consensus or bogus "same as trader" claims.
 - Typed schema for custom rules, user profiles, enable/disable all presets; prompts → proposal AST → validation → dry run → user approval to activate.
 - **Methodology fidelity (PRD F13).** Every profile version carries a `timeframe_policy` and the machine-readable fields `methodology_id`, `strategy_version`, `mode`, `asset_scope`, `documented_timeframes`, `context_timeframes`, `execution_timeframes`, `market_calendar`, `required_data`, `provenance`, `evidence_quality`, `implementation_maturity` (`catalog_only` / `experimental` / `validated`), `user_approved_adaptation`, `unresolved_limitations`. Unknown native timeframes are `UNVERIFIED`, never invented.
 - **Timeframe roles (PRD F03):** analysis (what the user views), methodology/native, context (regime) and execution (timing) are separate fields, not one `interval`.
